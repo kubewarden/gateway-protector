@@ -1,12 +1,10 @@
-CONTROLLER_TOOLS_VERSION := v0.16.5
+CONTROLLER_TOOLS_VERSION := v0.21.0
 ENVTEST_VERSION := release-0.24
 ENVTEST_K8S_VERSION := 1.33.0
-MOCKERY_VERSION := v3.3.4
 HELM_VALUES_SCHEMA_JSON_VERSION := v2.3.1
 
 CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
-MOCKERY ?= go run github.com/vektra/mockery/v3@$(MOCKERY_VERSION)
 HELM_SCHEMA ?= go run github.com/losisin/helm-values-schema-json/v2@$(HELM_VALUES_SCHEMA_JSON_VERSION)
 
 GO_MOD_SRCS := go.mod go.sum
@@ -65,25 +63,22 @@ controller-image:
 	@echo "Built $(REGISTRY)/$(REPO)/controller:$(TAG)"
 
 .PHONY: generate
-generate: generate-controller generate-chart generate-mocks generate-docs
+generate: generate-controller generate-chart generate-docs
 
 .PHONY: generate-controller
 generate-controller: manifests  ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(GO_BUILD_ENV) $(CONTROLLER_GEN) object paths="./api/v1alpha1"
 
 .PHONY: manifests
-manifests: ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects. We use yq to modify the generated files to match our naming and labels conventions.
-	$(GO_BUILD_ENV) $(CONTROLLER_GEN) rbac:roleName=controller-role crd webhook paths="./api/v1alpha1"  paths="./internal/controller" output:crd:artifacts:config=charts/gateway-protector/templates/crd output:rbac:artifacts:config=charts/gateway-protector/templates/controller
-	sed -i 's/controller-role/{{ include "gateway-protector.fullname" . }}-controller/' charts/gateway-protector/templates/controller/role.yaml
+manifests: ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects. We use sed to inject labels/annotations that controller-gen markers can't express (see role.yaml/webhooks.yaml); everything else (names, service target) comes from roleName=/serviceName=/serviceNamespace=/webhookconfiguration markers in the Go source.
+	$(GO_BUILD_ENV) $(CONTROLLER_GEN) rbac:roleName=unused crd webhook paths="./api/v1alpha1" paths="./internal/controller" paths="./internal/webhook/..." output:crd:artifacts:config=charts/gateway-protector/templates/crd output:rbac:artifacts:config=charts/gateway-protector/templates/controller output:webhook:artifacts:config=charts/gateway-protector/templates/controller
 	sed -i '/metadata:/a\  labels:\n    {{ include "gateway-protector.labels" . | nindent 4 }}\n    app.kubernetes.io/component: controller' charts/gateway-protector/templates/controller/role.yaml
+	sed -i '/^metadata:/a\  annotations:\n    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gateway-protector.fullname" . }}-controller-webhook-tls\n  labels:\n    {{ include "gateway-protector.labels" . | nindent 4 }}\n    app.kubernetes.io/component: controller' charts/gateway-protector/templates/controller/manifests.yaml
+	mv charts/gateway-protector/templates/controller/manifests.yaml charts/gateway-protector/templates/controller/webhooks.yaml
 
 .PHONY: generate-chart
 generate-chart: ## Generate Helm chart values schema.
 	$(HELM_SCHEMA) --values charts/gateway-protector/values.yaml --output charts/gateway-protector/values.schema.json
-
-.PHONY: generate-mocks
-generate-mocks: ## Generate mocks for testing.
-	$(MOCKERY)
 
 .PHONY: generate-docs
 generate-docs: ## Generate API documentation for CRDs.

@@ -1,0 +1,32 @@
+# Default values for gateway-protector.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# nameOverride replaces the chart name used when generating resource names,
+# while still keeping the release name as a prefix (e.g. `<release-name>-<nameOverride>`).
+# Leave empty to use the chart name.
+nameOverride: ""
+# fullnameOverride fully replaces the generated resource name prefix
+# (`<release-name>-<chart-name>`) for all resources created by this chart.
+# Leave empty to use the default generated name.
+fullnameOverride: ""
+
+controller:
+  image:
+    repository: ghcr.io/kubewarden/gateway-protector/controller
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  logLevel: "info"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Controller metrics endpoint. Enable to expose the /metrics endpoint,
+# protected via the cluster's authn/authz (see templates/controller/metrics_auth_role.yaml).
+metrics:
+  enabled: true

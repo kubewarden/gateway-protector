@@ -1,0 +1,446 @@
+# API Reference
+
+## Packages
+- [gateway-protector.kubewarden.io/v1alpha1](#gateway-protectorkubewardeniov1alpha1)
+
+
+## gateway-protector.kubewarden.io/v1alpha1
+
+Package v1alpha1 contains API Schema definitions for the gateway-protector.kubewarden.io v1alpha1 API group.
+
+### Resource Types
+- [WAFCoreRuleSet](#wafcoreruleset)
+- [WAFCoreRuleSetList](#wafcorerulesetlist)
+- [WAFPolicy](#wafpolicy)
+- [WAFPolicyList](#wafpolicylist)
+- [WAFRuleSet](#wafruleset)
+- [WAFRuleSetList](#wafrulesetlist)
+
+
+
+#### FailureMode
+
+_Underlying type:_ _string_
+
+FailureMode controls what the data plane does when the ext_proc processor
+is unreachable.
+
+_Validation:_
+- Enum: [FailClosed FailOpen]
+
+_Appears in:_
+- [WAFEngineSpec](#wafenginespec)
+
+| Field | Description |
+| --- | --- |
+| `FailClosed` | FailureModeClosed blocks traffic when the processor is unreachable.<br /> |
+| `FailOpen` | FailureModeOpen forwards traffic when the processor is unreachable.<br /> |
+
+
+#### LocalRuleSetReference
+
+
+
+LocalRuleSetReference references a WAFRuleSet living in the same namespace
+as the WAFPolicy that references it (see WAFPolicySpec.CustomRulesRefs).
+
+
+
+_Appears in:_
+- [WAFPolicySpec](#wafpolicyspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `kind` _string_ | kind is the kind of the referenced object. Currently only "WAFRuleSet"<br />is supported. |  | Enum: [WAFRuleSet] <br />Required: \{\} <br /> |
+| `name` _[ObjectName](#objectname)_ | name is the name of the referenced WAFRuleSet. |  | Required: \{\} <br /> |
+
+
+#### PolicyTargetReference
+
+
+
+PolicyTargetReference identifies the Gateway API object (Gateway or
+HTTPRoute) that a WAFPolicy/DLPPolicy attaches to.
+
+It mirrors the upstream Gateway API policy-attachment reference form (see
+sigs.k8s.io/gateway-api/apis/v1.NamespacedPolicyTargetReference), extended
+with an optional SectionName so a policy can target a single listener
+(when Kind is Gateway) or a single route rule (when Kind is HTTPRoute).
+Upstream does not currently ship a combined Namespace+SectionName
+reference type, so this struct is hand-written rather than reused
+directly.
+
+
+
+_Appears in:_
+- [WAFPolicySpec](#wafpolicyspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `group` _[Group](#group)_ | group is the group of the target resource. |  | Required: \{\} <br /> |
+| `kind` _[Kind](#kind)_ | kind is the kind of the target resource. Only "Gateway" and "HTTPRoute"<br />(group gateway.networking.k8s.io) are supported. |  | Enum: [Gateway HTTPRoute] <br />Required: \{\} <br /> |
+| `name` _[ObjectName](#objectname)_ | name is the name of the target resource. |  | Required: \{\} <br /> |
+| `namespace` _[Namespace](#namespace)_ | namespace is the namespace of the target resource. WAFPolicy/DLPPolicy<br />objects live in the platform-owned namespace (e.g.<br />gateway-protector-system) while the targeted Gateway/HTTPRoute usually<br />lives elsewhere, so this field is required to let the controller<br />resolve cross-namespace targets unambiguously. |  | Required: \{\} <br /> |
+| `sectionName` _[SectionName](#sectionname)_ | sectionName targets a specific listener (when kind is Gateway) or a<br />specific route rule (when kind is HTTPRoute). When unset, the policy<br />applies to the whole Gateway/HTTPRoute. |  | Optional: \{\} <br /> |
+
+
+#### WAFAnomalyThreshold
+
+
+
+WAFAnomalyThreshold sets the CRS anomaly-scoring thresholds above which a
+request (or response) is considered an attack.
+
+
+
+_Appears in:_
+- [WAFCoreRuleSetSelector](#wafcorerulesetselector)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `inbound` _integer_ | inbound is the anomaly score threshold applied to the request phase. |  | Optional: \{\} <br /> |
+| `outbound` _integer_ | outbound is the anomaly score threshold applied to the response phase. |  | Optional: \{\} <br /> |
+
+
+#### WAFBodyInspectionSpec
+
+
+
+WAFBodyInspectionSpec toggles and bounds request/response body inspection.
+
+
+
+_Appears in:_
+- [WAFPolicySpec](#wafpolicyspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | enabled toggles body inspection for this phase. |  | Required: \{\} <br /> |
+| `maxSize` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#quantity-resource-api)_ | maxSize caps the number of bytes buffered for inspection (e.g. "1Mi").<br />Bodies larger than this are handled per the engine's configured<br />behavior for oversized bodies. Only meaningful when enabled is true. |  | Optional: \{\} <br /> |
+
+
+#### WAFCoreRuleSet
+
+
+
+WAFCoreRuleSet is the Schema for the wafcorerulesets API. It registers a
+Core Rule Set bundle that ships with the processor image and that
+WAFPolicy.coreRuleSet.version can reference.
+
+
+
+_Appears in:_
+- [WAFCoreRuleSetList](#wafcorerulesetlist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
+| `kind` _string_ | `WAFCoreRuleSet` | | |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
+| `spec` _[WAFCoreRuleSetSpec](#wafcorerulesetspec)_ | spec defines the desired state of WAFCoreRuleSet |  | Required: \{\} <br /> |
+| `status` _[WAFCoreRuleSetStatus](#wafcorerulesetstatus)_ | status defines the observed state of WAFCoreRuleSet |  | Optional: \{\} <br /> |
+
+
+#### WAFCoreRuleSetList
+
+
+
+WAFCoreRuleSetList contains a list of WAFCoreRuleSet
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
+| `kind` _string_ | `WAFCoreRuleSetList` | | |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[WAFCoreRuleSet](#wafcoreruleset) array_ |  |  |  |
+
+
+#### WAFCoreRuleSetSelector
+
+
+
+WAFCoreRuleSetSelector selects and tunes the OWASP Core Rule Set bundle a
+WAFPolicy compiles against.
+
+
+
+_Appears in:_
+- [WAFPolicySpec](#wafpolicyspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `version` _string_ | version must match the version of an available WAFCoreRuleSet resource<br />registered in the cluster. |  | Pattern: `^[0-9]+\.[0-9]+(\.[0-9]+)?$` <br />Required: \{\} <br /> |
+| `paranoiaLevel` _integer_ | paranoiaLevel selects the CRS paranoia level (1-4); higher levels<br />enable more (and more false-positive-prone) rules. |  | Maximum: 4 <br />Minimum: 1 <br />Optional: \{\} <br /> |
+| `anomalyThreshold` _[WAFAnomalyThreshold](#wafanomalythreshold)_ | anomalyThreshold sets the inbound/outbound anomaly score thresholds. |  | Optional: \{\} <br /> |
+
+
+#### WAFCoreRuleSetSpec
+
+
+
+WAFCoreRuleSetSpec registers an OWASP Core Rule Set bundle baked into the
+processor image, so it can be referenced from a WAFPolicy's
+coreRuleSet.version.
+
+WAFCoreRuleSet is cluster-scoped: it describes what the processor image
+ships, not a per-namespace preference.
+
+
+
+_Appears in:_
+- [WAFCoreRuleSet](#wafcoreruleset)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `version` _string_ | version is the CRS version this bundle provides (e.g. "4.14").<br />WAFPolicy.coreRuleSet.version must match a registered WAFCoreRuleSet<br />version. |  | Pattern: `^[0-9]+\.[0-9]+(\.[0-9]+)?$` <br />Required: \{\} <br /> |
+| `default` _boolean_ | default marks this bundle as the one used when a WAFPolicy does not<br />pin coreRuleSet.version explicitly. At most one WAFCoreRuleSet should<br />set this to true. |  | Optional: \{\} <br /> |
+| `image` _string_ | image documents which processor image (or digest) ships this bundle.<br />Informational only; the controller does not reconcile against it. |  | Optional: \{\} <br /> |
+
+
+#### WAFCoreRuleSetStatus
+
+
+
+WAFCoreRuleSetStatus defines the observed state of WAFCoreRuleSet.
+
+
+
+_Appears in:_
+- [WAFCoreRuleSet](#wafcoreruleset)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#condition-v1-meta) array_ | conditions represent the current state of the WAFCoreRuleSet resource. |  | Optional: \{\} <br /> |
+
+
+#### WAFCustomRule
+
+
+
+WAFCustomRule is a single raw Coraza/ModSecurity SecRule directive block,
+identified by its numeric rule id.
+
+
+
+_Appears in:_
+- [WAFRuleSetSpec](#wafrulesetspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `id` _integer_ | id is the numeric SecRule id. It is the author's responsibility to keep<br />ids unique within a WAFRuleSet and outside of the ranges reserved by<br />the Core Rule Set and other WAFRuleSet objects referenced by the same<br />WAFPolicy; the admission webhook's dry-compile step (see TODO in<br />internal/webhook/v1alpha1/wafpolicy_webhook.go) additionally enforces<br />whatever uniqueness rules Coraza itself requires. |  | Required: \{\} <br /> |
+| `directive` _string_ | directive is one or more raw SecRule lines composing this rule. |  | Required: \{\} <br /> |
+
+
+#### WAFEngineMode
+
+_Underlying type:_ _string_
+
+WAFEngineMode controls whether the WAF engine blocks matching requests,
+only logs them, or is disabled entirely.
+
+_Validation:_
+- Enum: [Blocking Detection Off]
+
+_Appears in:_
+- [WAFEngineSpec](#wafenginespec)
+
+| Field | Description |
+| --- | --- |
+| `Blocking` | WAFEngineModeBlocking rejects requests that match a rule.<br /> |
+| `Detection` | WAFEngineModeDetection evaluates rules and reports matches but never<br />blocks traffic.<br /> |
+| `Off` | WAFEngineModeOff disables the WAF engine for the attachment point,<br />e.g. to let a route opt out of a Gateway-level default.<br /> |
+
+
+#### WAFEngineSpec
+
+
+
+WAFEngineSpec configures the WAF engine's operating mode and its behavior
+when the data plane cannot be reached.
+
+
+
+_Appears in:_
+- [WAFPolicySpec](#wafpolicyspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `mode` _[WAFEngineMode](#wafenginemode)_ | mode selects whether the engine blocks, only logs, or is disabled. |  | Enum: [Blocking Detection Off] <br />Required: \{\} <br /> |
+| `failureMode` _[FailureMode](#failuremode)_ | failureMode controls what happens to traffic when the ext_proc<br />processor is unreachable. There is intentionally no implicit default;<br />every WAFPolicy must state its failure posture explicitly. |  | Enum: [FailClosed FailOpen] <br />Required: \{\} <br /> |
+
+
+#### WAFExclusion
+
+
+
+WAFExclusion excludes specific CRS rules (by numeric id) or rule tags from
+evaluation, e.g. to silence a known false positive.
+
+
+
+_Appears in:_
+- [WAFPolicySpec](#wafpolicyspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `byId` _integer array_ | byId excludes specific CRS rule ids. |  | Optional: \{\} <br /> |
+| `byTag` _string array_ | byTag excludes every CRS rule carrying one of the given tags (e.g.<br />"attack-sqli"). |  | Optional: \{\} <br /> |
+
+
+#### WAFPolicy
+
+
+
+WAFPolicy is the Schema for the wafpolicies API. It attaches a Coraza +
+OWASP Core Rule Set WAF engine to a Gateway (as the default for all its
+routes) or to a single HTTPRoute (as an override of the Gateway default).
+
+
+
+_Appears in:_
+- [WAFPolicyList](#wafpolicylist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
+| `kind` _string_ | `WAFPolicy` | | |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
+| `spec` _[WAFPolicySpec](#wafpolicyspec)_ | spec defines the desired state of WAFPolicy |  | Required: \{\} <br /> |
+| `status` _[WAFPolicyStatus](#wafpolicystatus)_ | status defines the observed state of WAFPolicy |  | Optional: \{\} <br /> |
+
+
+#### WAFPolicyList
+
+
+
+WAFPolicyList contains a list of WAFPolicy
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
+| `kind` _string_ | `WAFPolicyList` | | |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[WAFPolicy](#wafpolicy) array_ |  |  |  |
+
+
+#### WAFPolicySpec
+
+
+
+WAFPolicySpec defines the desired state of WAFPolicy.
+
+See gateway-protector-design.md, section 7.1, for the full field
+reference and worked examples.
+
+
+
+_Appears in:_
+- [WAFPolicy](#wafpolicy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `targetRef` _[PolicyTargetReference](#policytargetreference)_ | targetRef identifies exactly one Gateway (applies to all its routes,<br />the common default case) or one HTTPRoute (overrides the Gateway<br />default for that route only). |  | Required: \{\} <br /> |
+| `engine` _[WAFEngineSpec](#wafenginespec)_ | engine configures the WAF engine's mode and failure posture. |  | Required: \{\} <br /> |
+| `coreRuleSet` _[WAFCoreRuleSetSelector](#wafcorerulesetselector)_ | coreRuleSet selects and tunes the OWASP Core Rule Set bundle. |  | Required: \{\} <br /> |
+| `requestBody` _[WAFBodyInspectionSpec](#wafbodyinspectionspec)_ | requestBody configures request body inspection. |  | Optional: \{\} <br /> |
+| `responseBody` _[WAFBodyInspectionSpec](#wafbodyinspectionspec)_ | responseBody configures response body inspection. |  | Optional: \{\} <br /> |
+| `exclusions` _[WAFExclusion](#wafexclusion) array_ | exclusions silence specific CRS rules (by id or tag), e.g. to resolve a<br />known false positive without lowering the paranoia level. |  | Optional: \{\} <br /> |
+| `customRulesRefs` _[LocalRuleSetReference](#localrulesetreference) array_ | customRulesRefs references WAFRuleSet objects, in the same namespace as<br />this WAFPolicy, whose custom SecRule directives are compiled into the<br />engine alongside the Core Rule Set. |  | Optional: \{\} <br /> |
+
+
+#### WAFPolicyStatus
+
+
+
+WAFPolicyStatus defines the observed state of WAFPolicy.
+
+
+
+_Appears in:_
+- [WAFPolicy](#wafpolicy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#condition-v1-meta) array_ | conditions represent the current state of the WAFPolicy resource, using<br />the Gateway API status-conditions convention: Accepted (valid, target<br />resolves, not conflicted - see ConditionReasonConflicted) and<br />Programmed (gateway wired, engine live in the data plane). |  | Optional: \{\} <br /> |
+
+
+#### WAFRuleSet
+
+
+
+WAFRuleSet is the Schema for the wafrulesets API. It is a reusable bundle
+of custom SecRule directives referenced from one or more WAFPolicy objects
+in the same namespace via customRulesRefs.
+
+
+
+_Appears in:_
+- [WAFRuleSetList](#wafrulesetlist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
+| `kind` _string_ | `WAFRuleSet` | | |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
+| `spec` _[WAFRuleSetSpec](#wafrulesetspec)_ | spec defines the desired state of WAFRuleSet |  | Required: \{\} <br /> |
+| `status` _[WAFRuleSetStatus](#wafrulesetstatus)_ | status defines the observed state of WAFRuleSet |  | Optional: \{\} <br /> |
+
+
+#### WAFRuleSetList
+
+
+
+WAFRuleSetList contains a list of WAFRuleSet
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
+| `kind` _string_ | `WAFRuleSetList` | | |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[WAFRuleSet](#wafruleset) array_ |  |  |  |
+
+
+#### WAFRuleSetSpec
+
+
+
+WAFRuleSetSpec defines the desired state of WAFRuleSet.
+
+
+
+_Appears in:_
+- [WAFRuleSet](#wafruleset)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `rules` _[WAFCustomRule](#wafcustomrule) array_ | rules are raw Coraza/ModSecurity SecRule directive blocks, referenced<br />from WAFPolicy.customRulesRefs to avoid pasting raw directives inline<br />in every WAFPolicy. |  | MinItems: 1 <br />Required: \{\} <br /> |
+
+
+#### WAFRuleSetStatus
+
+
+
+WAFRuleSetStatus defines the observed state of WAFRuleSet.
+
+
+
+_Appears in:_
+- [WAFRuleSet](#wafruleset)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#condition-v1-meta) array_ | conditions represent the current state of the WAFRuleSet resource. |  | Optional: \{\} <br /> |
+
+

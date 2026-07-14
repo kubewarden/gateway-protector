@@ -1,0 +1,29 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "gateway-protector.fullname" . }}-controller-webhook-issuer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "gateway-protector.fullname" . }}-controller-webhook-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  secretName: {{ include "gateway-protector.fullname" . }}-controller-webhook-tls
+  dnsNames:
+    - {{ include "gateway-protector.fullname" . }}-controller-webhook.{{ .Release.Namespace }}.svc
+    - {{ include "gateway-protector.fullname" . }}-controller-webhook.{{ .Release.Namespace }}.svc.cluster.local
+  privateKey:
+    rotationPolicy: Always
+  issuerRef:
+    kind: Issuer
+    name: {{ include "gateway-protector.fullname" . }}-controller-webhook-issuer

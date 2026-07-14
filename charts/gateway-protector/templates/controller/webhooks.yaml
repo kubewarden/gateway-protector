@@ -1,0 +1,62 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gateway-protector.fullname" . }}-controller-webhook-tls
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  name: '{{ include "gateway-protector.fullname" . }}-controller-webhook'
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: '{{ include "gateway-protector.fullname" . }}-controller-webhook'
+      namespace: '{{ .Release.Namespace }}'
+      path: /mutate-gateway-protector-kubewarden-io-v1alpha1-wafpolicy
+  failurePolicy: Fail
+  name: mwafpolicy-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - gateway-protector.kubewarden.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - wafpolicies
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gateway-protector.fullname" . }}-controller-webhook-tls
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  name: '{{ include "gateway-protector.fullname" . }}-controller-webhook-validating'
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: '{{ include "gateway-protector.fullname" . }}-controller-webhook'
+      namespace: '{{ .Release.Namespace }}'
+      path: /validate-gateway-protector-kubewarden-io-v1alpha1-wafpolicy
+  failurePolicy: Fail
+  name: vwafpolicy-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - gateway-protector.kubewarden.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - wafpolicies
+  sideEffects: None

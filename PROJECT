@@ -8,4 +8,26 @@ layout:
 - go.kubebuilder.io/v4
 projectName: gateway-protector
 repo: github.com/kubewarden/gateway-protector
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: gateway-protector.kubewarden.io
+  kind: WAFPolicy
+  path: github.com/kubewarden/gateway-protector/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+  domain: gateway-protector.kubewarden.io
+  kind: WAFCoreRuleSet
+  path: github.com/kubewarden/gateway-protector/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: gateway-protector.kubewarden.io
+  kind: WAFRuleSet
+  path: github.com/kubewarden/gateway-protector/api/v1alpha1
+  version: v1alpha1
 version: "3"

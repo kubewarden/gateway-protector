@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gateway-protector.fullname" . }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  selector:
+    matchLabels:
+      {{ include "gateway-protector.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  replicas: {{ .Values.controller.replicas }}
+  template:
+    metadata:
+      labels:
+        {{ include "gateway-protector.labels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+    spec:
+      containers:
+        - command:
+            - /controller
+          args:
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            {{- if .Values.metrics.enabled }}
+            - --metrics-bind-address=:8443
+            {{- else }}
+            - --metrics-bind-address=0
+            {{- end }}
+          image: '{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}'
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          name: controller
+          securityContext:
+            {{ include "gateway-protector.securityContext" . | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- if and .Values.controller .Values.controller.resources }}
+          resources:
+{{ toYaml .Values.controller.resources | indent 12 }}
+          {{- end }}
+          volumeMounts:
+            - mountPath: "/tmp/k8s-webhook-server/serving-certs"
+              name: webhook-tls
+              readOnly: true
+      volumes:
+        - name: webhook-tls
+          secret:
+            secretName: {{ include "gateway-protector.fullname" . }}-controller-webhook-tls
+      serviceAccountName: {{ include "gateway-protector.fullname" . }}-controller
+      terminationGracePeriodSeconds: 10

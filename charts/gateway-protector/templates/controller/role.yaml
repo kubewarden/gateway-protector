@@ -1,0 +1,72 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  name: '{{ include "gateway-protector.fullname" . }}-controller'
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway-protector.kubewarden.io
+  resources:
+  - wafcorerulesets
+  - wafrulesets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway-protector.kubewarden.io
+  resources:
+  - wafpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway-protector.kubewarden.io
+  resources:
+  - wafpolicies/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - gateway-protector.kubewarden.io
+  resources:
+  - wafpolicies/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways
+  - httproutes
+  verbs:
+  - get
+  - list
+  - watch
