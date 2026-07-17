@@ -9,12 +9,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	gatewayprotectorkubewardeniov1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
+	gwpv1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
 )
 
 // SetupWAFPolicyWebhookWithManager registers the webhook for WAFPolicy in the manager.
 func SetupWAFPolicyWebhookWithManager(mgr ctrl.Manager) error {
-	err := ctrl.NewWebhookManagedBy(mgr, &gatewayprotectorkubewardeniov1alpha1.WAFPolicy{}).
+	err := ctrl.NewWebhookManagedBy(mgr, &gwpv1alpha1.WAFPolicy{}).
 		WithValidator(&WAFPolicyCustomValidator{
 			logger: mgr.GetLogger().WithName("wafpolicy_validator"),
 		}).
@@ -40,10 +40,10 @@ type WAFPolicyCustomDefaulter struct {
 	logger logr.Logger
 }
 
-var _ admission.Defaulter[*gatewayprotectorkubewardeniov1alpha1.WAFPolicy] = &WAFPolicyCustomDefaulter{}
+var _ admission.Defaulter[*gwpv1alpha1.WAFPolicy] = &WAFPolicyCustomDefaulter{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind WAFPolicy.
-func (d *WAFPolicyCustomDefaulter) Default(_ context.Context, obj *gatewayprotectorkubewardeniov1alpha1.WAFPolicy) error {
+func (d *WAFPolicyCustomDefaulter) Default(_ context.Context, obj *gwpv1alpha1.WAFPolicy) error {
 	d.logger.Info("Defaulting WAFPolicy", "name", obj.GetName())
 
 	// TODO(user): this currently accepts everything unchanged. Nothing here
@@ -67,7 +67,7 @@ type WAFPolicyCustomValidator struct {
 	logger logr.Logger
 }
 
-var _ admission.Validator[*gatewayprotectorkubewardeniov1alpha1.WAFPolicy] = &WAFPolicyCustomValidator{}
+var _ admission.Validator[*gwpv1alpha1.WAFPolicy] = &WAFPolicyCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type WAFPolicy.
 //
@@ -77,8 +77,6 @@ var _ admission.Validator[*gatewayprotectorkubewardeniov1alpha1.WAFPolicy] = &WA
 //     paranoiaLevel + anomalyThreshold + exclusions + referenced
 //     WAFRuleSet.spec.rules) and reject invalid configuration before it
 //     reaches the data plane
-//   - verify every spec.customRulesRefs entry resolves to an existing
-//     WAFRuleSet in the same namespace
 //   - reject a duplicate targetRef: another WAFPolicy already targeting the
 //     exact same attachment point (same Gateway, or same HTTPRoute + optional
 //     sectionName) is a conflict, and should be a Conflicted admission-time
@@ -90,7 +88,17 @@ var _ admission.Validator[*gatewayprotectorkubewardeniov1alpha1.WAFPolicy] = &WA
 //     reconciler-side, creationTimestamp-based tiebreak in that same file
 //     remains the fallback for conflicts that slip past this webhook (e.g.
 //     simultaneous GitOps apply of two conflicting objects).
-func (v *WAFPolicyCustomValidator) ValidateCreate(_ context.Context, obj *gatewayprotectorkubewardeniov1alpha1.WAFPolicy) (admission.Warnings, error) {
+//
+// Deliberately NOT planned here: verifying that spec.customRulesRefs
+// resolves to an existing WAFRuleSet. Rejecting on a reference that doesn't
+// exist yet would make `kubectl apply -f dir/` order-dependent (the
+// WAFPolicy and its WAFRuleSet are typically applied together, in
+// unspecified order). That referential-integrity check belongs to the
+// reconciler instead, which reports it as Accepted=False/Invalid and
+// re-evaluates once the missing WAFRuleSet shows up (see
+// internal/controller/wafpolicy_target.go's resolveCustomRulesRefs and
+// docs/wafpolicy-lifecycle.md).
+func (v *WAFPolicyCustomValidator) ValidateCreate(_ context.Context, obj *gwpv1alpha1.WAFPolicy) (admission.Warnings, error) {
 	v.logger.Info("Validating WAFPolicy upon creation", "name", obj.GetName())
 
 	// TODO(user): fill in your validation logic upon object creation.
@@ -102,7 +110,7 @@ func (v *WAFPolicyCustomValidator) ValidateCreate(_ context.Context, obj *gatewa
 //
 // TODO(user): this currently accepts everything unchanged; see the TODO on
 // ValidateCreate for the validation this should eventually perform.
-func (v *WAFPolicyCustomValidator) ValidateUpdate(_ context.Context, _, newObj *gatewayprotectorkubewardeniov1alpha1.WAFPolicy) (admission.Warnings, error) {
+func (v *WAFPolicyCustomValidator) ValidateUpdate(_ context.Context, _, newObj *gwpv1alpha1.WAFPolicy) (admission.Warnings, error) {
 	v.logger.Info("Validating WAFPolicy upon update", "name", newObj.GetName())
 
 	// TODO(user): fill in your validation logic upon object update.
@@ -111,7 +119,7 @@ func (v *WAFPolicyCustomValidator) ValidateUpdate(_ context.Context, _, newObj *
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type WAFPolicy.
-func (v *WAFPolicyCustomValidator) ValidateDelete(_ context.Context, obj *gatewayprotectorkubewardeniov1alpha1.WAFPolicy) (admission.Warnings, error) {
+func (v *WAFPolicyCustomValidator) ValidateDelete(_ context.Context, obj *gwpv1alpha1.WAFPolicy) (admission.Warnings, error) {
 	v.logger.Info("Validating WAFPolicy upon deletion", "name", obj.GetName())
 
 	// TODO(user): fill in your validation logic upon object deletion, if any

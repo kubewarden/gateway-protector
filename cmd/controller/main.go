@@ -34,8 +34,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	gatewayprotectorkubewardeniov1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
+	gwpv1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
 	"github.com/kubewarden/gateway-protector/internal/controller"
 	webhookv1alpha1 "github.com/kubewarden/gateway-protector/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -48,8 +49,9 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(gatewayv1.Install(scheme))
 
-	utilruntime.Must(gatewayprotectorkubewardeniov1alpha1.AddToScheme(scheme))
+	utilruntime.Must(gwpv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -161,6 +163,7 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "64ecc2d4.gateway-protector.kubewarden.io",
+		Cache:                  controller.CacheOptions(),
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly

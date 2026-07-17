@@ -12,32 +12,32 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	gatewayprotectorkubewardeniov1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
+	gwpv1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
 )
 
 type wafPolicyTestCase struct {
 	name          string
-	policy        *gatewayprotectorkubewardeniov1alpha1.WAFPolicy
+	policy        *gwpv1alpha1.WAFPolicy
 	expectedError string
 	expectedField string
 }
 
 func TestWAFPolicyDefaulter_Default(t *testing.T) {
-	policy := &gatewayprotectorkubewardeniov1alpha1.WAFPolicy{
+	policy := &gwpv1alpha1.WAFPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "shop-gateway-default",
 			Namespace: "gateway-protector-system",
 		},
-		Spec: gatewayprotectorkubewardeniov1alpha1.WAFPolicySpec{
-			TargetRef: gatewayprotectorkubewardeniov1alpha1.PolicyTargetReference{
+		Spec: gwpv1alpha1.WAFPolicySpec{
+			TargetRef: gwpv1alpha1.PolicyTargetReference{
 				Group:     gatewayv1.GroupName,
 				Kind:      "Gateway",
 				Name:      "shared-gw",
 				Namespace: "infra",
 			},
-			Engine: gatewayprotectorkubewardeniov1alpha1.WAFEngineSpec{
-				Mode:        gatewayprotectorkubewardeniov1alpha1.WAFEngineModeBlocking,
-				FailureMode: gatewayprotectorkubewardeniov1alpha1.FailureModeClosed,
+			Engine: gwpv1alpha1.WAFEngineSpec{
+				Mode:        gwpv1alpha1.WAFEngineModeBlocking,
+				FailureMode: gwpv1alpha1.FailureModeClosed,
 			},
 		},
 	}
@@ -60,43 +60,43 @@ func TestWAFPolicyDefaulter_Default(t *testing.T) {
 var wafPolicyTestCases = []wafPolicyTestCase{
 	{
 		name: "should admit a Gateway-level default policy",
-		policy: &gatewayprotectorkubewardeniov1alpha1.WAFPolicy{
+		policy: &gwpv1alpha1.WAFPolicy{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "shop-gateway-default",
 				Namespace: "gateway-protector-system",
 			},
-			Spec: gatewayprotectorkubewardeniov1alpha1.WAFPolicySpec{
-				TargetRef: gatewayprotectorkubewardeniov1alpha1.PolicyTargetReference{
+			Spec: gwpv1alpha1.WAFPolicySpec{
+				TargetRef: gwpv1alpha1.PolicyTargetReference{
 					Group:     gatewayv1.GroupName,
 					Kind:      "Gateway",
 					Name:      "shared-gw",
 					Namespace: "infra",
 				},
-				Engine: gatewayprotectorkubewardeniov1alpha1.WAFEngineSpec{
-					Mode:        gatewayprotectorkubewardeniov1alpha1.WAFEngineModeBlocking,
-					FailureMode: gatewayprotectorkubewardeniov1alpha1.FailureModeClosed,
+				Engine: gwpv1alpha1.WAFEngineSpec{
+					Mode:        gwpv1alpha1.WAFEngineModeBlocking,
+					FailureMode: gwpv1alpha1.FailureModeClosed,
 				},
 			},
 		},
 	},
 	{
 		name: "should admit an HTTPRoute override targeting a single sectionName",
-		policy: &gatewayprotectorkubewardeniov1alpha1.WAFPolicy{
+		policy: &gwpv1alpha1.WAFPolicy{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "admin-portal-strict",
 				Namespace: "gateway-protector-system",
 			},
-			Spec: gatewayprotectorkubewardeniov1alpha1.WAFPolicySpec{
-				TargetRef: gatewayprotectorkubewardeniov1alpha1.PolicyTargetReference{
+			Spec: gwpv1alpha1.WAFPolicySpec{
+				TargetRef: gwpv1alpha1.PolicyTargetReference{
 					Group:       gatewayv1.GroupName,
 					Kind:        "HTTPRoute",
 					Name:        "admin-portal",
 					Namespace:   "team-shop",
 					SectionName: ptr.To(gatewayv1.SectionName("admin")),
 				},
-				Engine: gatewayprotectorkubewardeniov1alpha1.WAFEngineSpec{
-					Mode:        gatewayprotectorkubewardeniov1alpha1.WAFEngineModeBlocking,
-					FailureMode: gatewayprotectorkubewardeniov1alpha1.FailureModeClosed,
+				Engine: gwpv1alpha1.WAFEngineSpec{
+					Mode:        gwpv1alpha1.WAFEngineModeBlocking,
+					FailureMode: gwpv1alpha1.FailureModeClosed,
 				},
 				ParanoiaLevel: 3,
 			},
@@ -104,21 +104,21 @@ var wafPolicyTestCases = []wafPolicyTestCase{
 	},
 	{
 		name: "should admit a route opting out via mode Off",
-		policy: &gatewayprotectorkubewardeniov1alpha1.WAFPolicy{
+		policy: &gwpv1alpha1.WAFPolicy{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "public-status-page-off",
 				Namespace: "gateway-protector-system",
 			},
-			Spec: gatewayprotectorkubewardeniov1alpha1.WAFPolicySpec{
-				TargetRef: gatewayprotectorkubewardeniov1alpha1.PolicyTargetReference{
+			Spec: gwpv1alpha1.WAFPolicySpec{
+				TargetRef: gwpv1alpha1.PolicyTargetReference{
 					Group:     gatewayv1.GroupName,
 					Kind:      "HTTPRoute",
 					Name:      "public-status-page",
 					Namespace: "team-shop",
 				},
-				Engine: gatewayprotectorkubewardeniov1alpha1.WAFEngineSpec{
-					Mode:        gatewayprotectorkubewardeniov1alpha1.WAFEngineModeOff,
-					FailureMode: gatewayprotectorkubewardeniov1alpha1.FailureModeOpen,
+				Engine: gwpv1alpha1.WAFEngineSpec{
+					Mode:        gwpv1alpha1.WAFEngineModeOff,
+					FailureMode: gwpv1alpha1.FailureModeOpen,
 				},
 			},
 		},
@@ -167,7 +167,7 @@ func TestWAFPolicyCustomValidator_ValidateUpdate(t *testing.T) {
 			}
 
 			ctx := admission.NewContextWithRequest(t.Context(), admission.Request{})
-			warnings, err := validator.ValidateUpdate(ctx, &gatewayprotectorkubewardeniov1alpha1.WAFPolicy{}, test.policy)
+			warnings, err := validator.ValidateUpdate(ctx, &gwpv1alpha1.WAFPolicy{}, test.policy)
 
 			if test.expectedError != "" {
 				require.Error(t, err)
@@ -192,7 +192,7 @@ func TestWAFPolicyCustomValidator_ValidateDelete(t *testing.T) {
 		logger: logr.Discard(),
 	}
 
-	policy := &gatewayprotectorkubewardeniov1alpha1.WAFPolicy{
+	policy := &gwpv1alpha1.WAFPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "shop-gateway-default",
 			Namespace: "gateway-protector-system",

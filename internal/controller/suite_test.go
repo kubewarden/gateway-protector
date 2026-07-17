@@ -3,7 +3,9 @@ package controller
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,12 +14,16 @@ import (
 
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	gatewayprotectorkubewardeniov1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
+	gwpv1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -29,6 +35,7 @@ var (
 	testEnv   *envtest.Environment
 	cfg       *rest.Config
 	k8sClient client.Client
+	mgr       manager.Manager
 )
 
 func TestControllers(t *testing.T) {
@@ -40,17 +47,24 @@ func TestControllers(t *testing.T) {
 var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
-	_, cancel = context.WithCancel(context.TODO())
+	var ctx context.Context
+	ctx, cancel = context.WithCancel(context.TODO())
 
 	var err error
-	err = gatewayprotectorkubewardeniov1alpha1.AddToScheme(scheme.Scheme)
+	err = gwpv1alpha1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = gatewayv1.Install(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "charts", "gateway-protector", "templates", "crd")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "charts", "gateway-protector", "templates", "crd"),
+			gatewayAPICRDDirectory(),
+		},
 		ErrorIfCRDPathMissing: true,
 	}
 
@@ -67,6 +81,25 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	mgr, err = ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:  scheme.Scheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
+		Cache:   CacheOptions(),
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	err = (&WAFPolicyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	go func() {
+		defer GinkgoRecover()
+		err := mgr.Start(ctx)
+		Expect(err).NotTo(HaveOccurred(), "failed to run manager")
+	}()
 })
 
 var _ = AfterSuite(func() {
@@ -98,4 +131,16 @@ func getFirstFoundEnvTestBinaryDir() string {
 		}
 	}
 	return ""
+}
+
+// gatewayAPICRDDirectory resolves the on-disk directory containing the
+// standard Gateway API CRDs (Gateway, HTTPRoute, etc.) shipped inside the
+// sigs.k8s.io/gateway-api module that this repository already depends on
+// (see go.mod), so envtest installs a version that always matches the Go
+// types compiled into the reconciler - no vendored copy to keep in sync.
+func gatewayAPICRDDirectory() string {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "sigs.k8s.io/gateway-api").Output()
+	Expect(err).NotTo(HaveOccurred(), "failed to resolve sigs.k8s.io/gateway-api module directory")
+
+	return filepath.Join(strings.TrimSpace(string(out)), "config", "crd", "standard")
 }
