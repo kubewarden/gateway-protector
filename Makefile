@@ -17,7 +17,7 @@ REPO ?= kubewarden/gateway-protector
 TAG ?= latest
 
 .PHONY: all
-all: controller
+all: controller processor
 
 .PHONY: test
 test: vet ## Run tests.
@@ -61,6 +61,19 @@ controller-image:
 	docker build -f ./Dockerfile.controller \
 		-t "$(REGISTRY)/$(REPO)/controller:$(TAG)" .
 	@echo "Built $(REGISTRY)/$(REPO)/controller:$(TAG)"
+
+PROCESSOR_SRC_DIRS := cmd/processor internal/processor
+PROCESSOR_GO_SRCS := $(shell find $(PROCESSOR_SRC_DIRS) -type f -name '*.go' 2>/dev/null)
+PROCESSOR_SRCS := $(GO_MOD_SRCS) $(PROCESSOR_GO_SRCS)
+.PHONY: processor
+processor: $(PROCESSOR_SRCS) vet
+	$(GO_BUILD_ENV) go build -o ./bin/processor ./cmd/processor
+
+.PHONY: processor-image
+processor-image:
+	docker build -f ./Dockerfile.processor \
+		-t "$(REGISTRY)/$(REPO)/processor:$(TAG)" .
+	@echo "Built $(REGISTRY)/$(REPO)/processor:$(TAG)"
 
 .PHONY: generate
 generate: generate-controller generate-chart generate-docs

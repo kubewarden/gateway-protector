@@ -92,9 +92,16 @@ const (
 
 	// ConditionReasonConflicted mirrors gatewayv1.PolicyReasonConflicted; used
 	// with ConditionTypeAccepted=False when another policy of the same kind
-	// already targets the same attachment point (see gateway-protector-design.md,
-	// section 6, "Conflicts"). The data plane keeps running the previously
-	// accepted engine.
+	// already targets the exact same attachment point (e.g. two WAFPolicy
+	// objects both targeting the same Gateway, or the same HTTPRoute +
+	// optional sectionName). This is distinct from one policy overriding
+	// another at a different attachment level (a Gateway-level default
+	// overridden by a Route-level policy): that is the intended
+	// most-specific-wins behavior, not a conflict. When two policies of the
+	// same kind do race for the same attachment point, the older one (by
+	// creationTimestamp) wins and the newer one gets this reason; the data
+	// plane keeps running whatever engine was already compiled and accepted,
+	// rather than an undefined or unprotected state.
 	ConditionReasonConflicted = string(gatewayv1.PolicyReasonConflicted)
 
 	// ConditionReasonProgrammed is used with ConditionTypeProgrammed=True once

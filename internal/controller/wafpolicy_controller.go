@@ -31,19 +31,36 @@ type WAFPolicyReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
-// TODO(user): this currently only satisfies the base scaffold. The real
-// reconciliation logic (see gateway-protector-design.md, section 11.2) still
+// TODO(user): this currently only satisfies the base scaffold. For each
+// route-rule under a managed Gateway, the real reconciliation logic still
 // needs to:
+//   - resolve the effective WAFPolicy for the route: the route's own
+//     targetRef if one targets it directly, otherwise the Gateway's
+//     targetRef (the Gateway-level policy is the default for every route
+//     under it), otherwise none - so a route may end up with no WAF engine
+//     attached at all; DLPPolicy (once it exists) is resolved the same way,
+//     independently
+//   - detect conflicts: if two WAFPolicy objects target the very same
+//     attachment point (same Gateway, or same HTTPRoute + optional
+//     sectionName), that is a conflict - not to be confused with a Gateway
+//     policy being overridden by a Route policy, which is the intended
+//     most-specific-wins behavior, not a conflict. On a genuine conflict the
+//     older object (by creationTimestamp) wins and the newer one gets
+//     Accepted=False/Conflicted; the previously accepted engine keeps
+//     running unchanged
 //   - resolve targetRef against the Gateway/HTTPRoute it points at and set
 //     Accepted=False/TargetNotFound when it doesn't resolve
-//   - detect conflicts with another WAFPolicy targeting the same attachment
-//     point (oldest creationTimestamp wins) and set
-//     Accepted=False/Conflicted on the loser
-//   - compile the engine (Core Rule Set + customRulesRefs) and push
-//     {engines, host+path map} to the processor
-//   - render/reconcile the generated AgentgatewayPolicy for the target route,
-//     owned by that route for GC
-//   - set Accepted/Programmed conditions once the above succeeds
+//   - compile the engine (Core Rule Set version + exclusions + referenced
+//     WAFRuleSet.spec.rules) and push {engines, host+path routing table} to
+//     the processor's data-plane config (see docs/processor.md for that
+//     config's schema)
+//   - render/reconcile a generated AgentgatewayPolicy for the target route
+//     (one per protected route, wiring the shared processor Service as
+//     backendRef, with failureMode set to the strictest of the route's
+//     effective WAF/DLP failureMode, and processingOptions as the union of
+//     what WAF/DLP each need), owned by that route for garbage collection
+//   - set Accepted/Programmed conditions on the WAFPolicy once the above
+//     succeeds (or Conflicted on the losing side of a conflict, per above)
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/reconcile

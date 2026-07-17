@@ -337,8 +337,16 @@ WAFPolicyList contains a list of WAFPolicy
 
 WAFPolicySpec defines the desired state of WAFPolicy.
 
-See gateway-protector-design.md, section 7.1, for the full field
-reference and worked examples.
+A WAFPolicy attaches a Coraza + OWASP Core Rule Set WAF engine to a
+Gateway (as the default for all its routes) or to a single HTTPRoute (as
+an override of the Gateway default for that route only) - resolved
+"most-specific-wins" between exactly those two attachment levels, with no
+merging: a Route-level WAFPolicy fully replaces the Gateway-level one for
+that route, it doesn't add to it. See the field docs below for the
+per-field reference, WAFPolicyCustomValidator's doc comments
+(internal/webhook/v1alpha1/wafpolicy_webhook.go) for the validation and
+conflict-resolution rules, and docs/processor.md for how the compiled
+result is ultimately consumed by the data plane.
 
 
 

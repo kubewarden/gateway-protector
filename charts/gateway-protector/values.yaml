@@ -26,7 +26,33 @@ controller:
       cpu: 100m
       memory: 128Mi
 
-# Controller metrics endpoint. Enable to expose the /metrics endpoint,
-# protected via the cluster's authn/authz (see templates/controller/metrics_auth_role.yaml).
-metrics:
-  enabled: true
+# processor is the Envoy ext_proc gRPC service that runs the WAF (and, in the
+# future, DLP). It is the backendRef target of the AgentgatewayPolicy objects the
+# controller generates.
+processor:
+  image:
+    repository: ghcr.io/kubewarden/gateway-protector/processor
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  logLevel: "info"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  # config is the processor's data-plane configuration: Coraza/SecLang
+  # directive blocks keyed by engine key, plus the host+pathPrefix routing
+  # table that selects one per request (see internal/processor/config).
+  #
+  # This is hand-authored for now (the default below is an inert example: a
+  # single "SecRuleEngine Off" engine and no routes, so a default install
+  # protects nothing but still starts cleanly). A future controller will
+  # generate this from WAFPolicy/WAFCoreRuleSet/WAFRuleSet objects instead.
+  config:
+    directives:
+      default: |
+        SecRuleEngine Off
+    routes: []

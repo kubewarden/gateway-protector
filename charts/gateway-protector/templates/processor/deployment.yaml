@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gateway-protector.fullname" . }}-processor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: processor
+spec:
+  selector:
+    matchLabels:
+      {{ include "gateway-protector.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: processor
+  replicas: {{ .Values.processor.replicas }}
+  template:
+    metadata:
+      labels:
+        {{ include "gateway-protector.labels" . | nindent 8 }}
+        app.kubernetes.io/component: processor
+    spec:
+      containers:
+        - command:
+            - /processor
+          args:
+            - --grpc-bind-address=:9000
+            - --config=/etc/gateway-protector/processor/config.yaml
+            {{- if .Values.processor.logLevel }}
+            - --log-level={{ .Values.processor.logLevel }}
+            {{- end }}
+          image: '{{ .Values.processor.image.repository }}:{{ .Values.processor.image.tag }}'
+          imagePullPolicy: {{ .Values.processor.image.pullPolicy }}
+          name: processor
+          securityContext:
+            {{ include "gateway-protector.securityContext" . | nindent 12 }}
+          ports:
+            - name: grpc
+              containerPort: 9000
+          livenessProbe:
+            grpc:
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            grpc:
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- if and .Values.processor .Values.processor.resources }}
+          resources:
+{{ toYaml .Values.processor.resources | indent 12 }}
+          {{- end }}
+          volumeMounts:
+            - mountPath: "/etc/gateway-protector/processor"
+              name: config
+              readOnly: true
+            - mountPath: "/tmp"
+              name: tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "gateway-protector.fullname" . }}-processor-config
+        - name: tmp
+          emptyDir: {}
+      terminationGracePeriodSeconds: 10

@@ -13,7 +13,6 @@ spec:
   selector:
     {{- include "gateway-protector.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: controller
-{{- if .Values.metrics.enabled }}
 ---
 apiVersion: v1
 kind: Service
@@ -31,4 +30,3 @@ spec:
   selector:
     {{- include "gateway-protector.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: controller
-{{- end }}
