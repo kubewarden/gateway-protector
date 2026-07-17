@@ -7,7 +7,7 @@ body, response headers, response body), so a single process can run WAF (request
 and, eventually, DLP (response-phase redact/mask/block) with one network hop instead of two.
 
 The processor has no Kubernetes API dependency: it is configured entirely by a local YAML file (see
-[Configuration](#configuration) below) and knows nothing about `WAFPolicy`/`WAFCoreRuleSet`/
+[Configuration](#configuration) below) and knows nothing about `WAFPolicy`/
 `WAFRuleSet` objects. A future controller will render that config file automatically from those CRDs;
 today it is hand-authored (see `charts/gateway-protector/values.yaml`'s `processor.config` for the
 chart-installed default).
@@ -113,7 +113,9 @@ routes:
 
 The Core Rule Set shown above (`@coraza.conf-recommended`, `@crs-setup.conf.example`,
 `@owasp_crs/*.conf`) comes from the embedded `github.com/corazawaf/coraza-coreruleset` module (see
-`internal/processor/config/compile.go`); no vendored rule files ship in this repository.
+`internal/processor/config/compile.go`); no vendored rule files ship in this repository. Exactly one
+CRS version is baked into a given processor binary; its version is logged at startup (`crs-version`
+attribute on the "Processor ready" log line).
 
 ## Request-time flow
 
@@ -181,6 +183,6 @@ not a correctness bug - worth revisiting before recommending frequent reloads in
 - **No WebSocket-specific handling** - a long-lived upgraded connection is just a single ext_proc
   stream/Coraza transaction like any other request; there's no dedicated state machine for it.
 - **Config is hand-authored** - the controller does not yet render this file from
-  `WAFPolicy`/`WAFCoreRuleSet`/`WAFRuleSet` objects.
+  `WAFPolicy`/`WAFRuleSet` objects.
 - **No mTLS** between agentgateway and the processor yet.
 - **No `WAFCloser` cleanup on reload** (see "Hot reload" above).

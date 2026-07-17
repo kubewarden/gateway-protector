@@ -105,7 +105,10 @@ func run() int {
 		cancel()
 	}()
 
-	logger.InfoContext(ctx, "Processor ready", slog.String("grpc-bind-address", cfg.GRPCBindAddress), slog.String("config", cfg.ConfigPath))
+	logger.InfoContext(ctx, "Processor ready",
+		slog.String("grpc-bind-address", cfg.GRPCBindAddress),
+		slog.String("config", cfg.ConfigPath),
+		slog.String("crs-version", config.EmbeddedCRSVersion()))
 	if err := grpcServer.Serve(lis); err != nil {
 		logger.ErrorContext(ctx, "gRPC server failed", slog.Any("error", err))
 		return 1

@@ -14,8 +14,6 @@
 Package v1alpha1 contains API Schema definitions for the gateway-protector.kubewarden.io v1alpha1 API group.
 
 .Resource Types
-- xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcoreruleset[$$WAFCoreRuleSet$$]
-- xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcorerulesetlist[$$WAFCoreRuleSetList$$]
 - xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafpolicy[$$WAFPolicy$$]
 - xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafpolicylist[$$WAFPolicyList$$]
 - xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafruleset[$$WAFRuleSet$$]
@@ -127,7 +125,7 @@ request (or response) is considered an attack.
 
 .Appears In:
 ****
-- xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcorerulesetselector[$$WAFCoreRuleSetSelector$$]
+- xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafpolicyspec[$$WAFPolicySpec$$]
 ****
 
 [cols="20a,50a,15a,15a", options="header"]
@@ -162,150 +160,6 @@ WAFBodyInspectionSpec toggles and bounds request/response body inspection.
 | *`maxSize`* __link:https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#quantity-resource-api[$$Quantity$$]__ | maxSize caps the number of bytes buffered for inspection (e.g. "1Mi"). +
 Bodies larger than this are handled per the engine's configured +
 behavior for oversized bodies. Only meaningful when enabled is true. + |  | Optional: \{} +
-
-|===
-
-
-[id="{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcoreruleset"]
-==== WAFCoreRuleSet
-
-
-
-WAFCoreRuleSet is the Schema for the wafcorerulesets API. It registers a
-Core Rule Set bundle that ships with the processor image and that
-WAFPolicy.coreRuleSet.version can reference.
-
-
-
-.Appears In:
-****
-- xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcorerulesetlist[$$WAFCoreRuleSetList$$]
-****
-
-[cols="20a,50a,15a,15a", options="header"]
-|===
-| Field | Description | Default | Validation
-| *`apiVersion`* __string__ | `gateway-protector.kubewarden.io/v1alpha1` | |
-| *`kind`* __string__ | `WAFCoreRuleSet` | |
-| *`metadata`* __link:https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#objectmeta-v1-meta[$$ObjectMeta$$]__ | Refer to Kubernetes API documentation for fields of `metadata`.
- |  | Optional: \{} +
-
-| *`spec`* __xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcorerulesetspec[$$WAFCoreRuleSetSpec$$]__ | spec defines the desired state of WAFCoreRuleSet + |  | Required: \{} +
-
-| *`status`* __xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcorerulesetstatus[$$WAFCoreRuleSetStatus$$]__ | status defines the observed state of WAFCoreRuleSet + |  | Optional: \{} +
-
-|===
-
-
-[id="{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcorerulesetlist"]
-==== WAFCoreRuleSetList
-
-
-
-WAFCoreRuleSetList contains a list of WAFCoreRuleSet
-
-
-
-
-
-[cols="20a,50a,15a,15a", options="header"]
-|===
-| Field | Description | Default | Validation
-| *`apiVersion`* __string__ | `gateway-protector.kubewarden.io/v1alpha1` | |
-| *`kind`* __string__ | `WAFCoreRuleSetList` | |
-| *`metadata`* __link:https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#listmeta-v1-meta[$$ListMeta$$]__ | Refer to Kubernetes API documentation for fields of `metadata`.
- |  | 
-| *`items`* __xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcoreruleset[$$WAFCoreRuleSet$$] array__ |  |  | 
-|===
-
-
-[id="{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcorerulesetselector"]
-==== WAFCoreRuleSetSelector
-
-
-
-WAFCoreRuleSetSelector selects and tunes the OWASP Core Rule Set bundle a
-WAFPolicy compiles against.
-
-
-
-.Appears In:
-****
-- xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafpolicyspec[$$WAFPolicySpec$$]
-****
-
-[cols="20a,50a,15a,15a", options="header"]
-|===
-| Field | Description | Default | Validation
-| *`version`* __string__ | version must match the version of an available WAFCoreRuleSet resource +
-registered in the cluster. + |  | Pattern: `^[0-9]+\.[0-9]+(\.[0-9]+)?$` +
-Required: \{} +
-
-| *`paranoiaLevel`* __integer__ | paranoiaLevel selects the CRS paranoia level (1-4); higher levels +
-enable more (and more false-positive-prone) rules. + |  | Maximum: 4 +
-Minimum: 1 +
-Optional: \{} +
-
-| *`anomalyThreshold`* __xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafanomalythreshold[$$WAFAnomalyThreshold$$]__ | anomalyThreshold sets the inbound/outbound anomaly score thresholds. + |  | Optional: \{} +
-
-|===
-
-
-[id="{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcorerulesetspec"]
-==== WAFCoreRuleSetSpec
-
-
-
-WAFCoreRuleSetSpec registers an OWASP Core Rule Set bundle baked into the
-processor image, so it can be referenced from a WAFPolicy's
-coreRuleSet.version.
-
-WAFCoreRuleSet is cluster-scoped: it describes what the processor image
-ships, not a per-namespace preference.
-
-
-
-.Appears In:
-****
-- xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcoreruleset[$$WAFCoreRuleSet$$]
-****
-
-[cols="20a,50a,15a,15a", options="header"]
-|===
-| Field | Description | Default | Validation
-| *`version`* __string__ | version is the CRS version this bundle provides (e.g. "4.14"). +
-WAFPolicy.coreRuleSet.version must match a registered WAFCoreRuleSet +
-version. + |  | Pattern: `^[0-9]+\.[0-9]+(\.[0-9]+)?$` +
-Required: \{} +
-
-| *`default`* __boolean__ | default marks this bundle as the one used when a WAFPolicy does not +
-pin coreRuleSet.version explicitly. At most one WAFCoreRuleSet should +
-set this to true. + |  | Optional: \{} +
-
-| *`image`* __string__ | image documents which processor image (or digest) ships this bundle. +
-Informational only; the controller does not reconcile against it. + |  | Optional: \{} +
-
-|===
-
-
-[id="{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcorerulesetstatus"]
-==== WAFCoreRuleSetStatus
-
-
-
-WAFCoreRuleSetStatus defines the observed state of WAFCoreRuleSet.
-
-
-
-.Appears In:
-****
-- xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcoreruleset[$$WAFCoreRuleSet$$]
-****
-
-[cols="20a,50a,15a,15a", options="header"]
-|===
-| Field | Description | Default | Validation
-| *`conditions`* __link:https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#condition-v1-meta[$$Condition$$] array__ | conditions represent the current state of the WAFCoreRuleSet resource. + |  | Optional: \{} +
 
 |===
 
@@ -500,7 +354,14 @@ default for that route only). + |  | Required: \{} +
 
 | *`engine`* __xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafenginespec[$$WAFEngineSpec$$]__ | engine configures the WAF engine's mode and failure posture. + |  | Required: \{} +
 
-| *`coreRuleSet`* __xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafcorerulesetselector[$$WAFCoreRuleSetSelector$$]__ | coreRuleSet selects and tunes the OWASP Core Rule Set bundle. + |  | Required: \{} +
+| *`paranoiaLevel`* __integer__ | paranoiaLevel selects the CRS paranoia level (1-4); higher levels +
+enable more (and more false-positive-prone) rules. Absent means the +
+Core Rule Set's own default (paranoia level 1). + |  | Maximum: 4 +
+Minimum: 1 +
+Optional: \{} +
+
+| *`anomalyThreshold`* __xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafanomalythreshold[$$WAFAnomalyThreshold$$]__ | anomalyThreshold sets the inbound/outbound anomaly score thresholds. +
+Absent means the Core Rule Set's own defaults. + |  | Optional: \{} +
 
 | *`requestBody`* __xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-wafbodyinspectionspec[$$WAFBodyInspectionSpec$$]__ | requestBody configures request body inspection. + |  | Optional: \{} +
 

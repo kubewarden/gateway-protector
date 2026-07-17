@@ -39,9 +39,6 @@ func TestWAFPolicyDefaulter_Default(t *testing.T) {
 				Mode:        gatewayprotectorkubewardeniov1alpha1.WAFEngineModeBlocking,
 				FailureMode: gatewayprotectorkubewardeniov1alpha1.FailureModeClosed,
 			},
-			CoreRuleSet: gatewayprotectorkubewardeniov1alpha1.WAFCoreRuleSetSelector{
-				Version: "4.14",
-			},
 		},
 	}
 	before := policy.DeepCopy()
@@ -79,9 +76,6 @@ var wafPolicyTestCases = []wafPolicyTestCase{
 					Mode:        gatewayprotectorkubewardeniov1alpha1.WAFEngineModeBlocking,
 					FailureMode: gatewayprotectorkubewardeniov1alpha1.FailureModeClosed,
 				},
-				CoreRuleSet: gatewayprotectorkubewardeniov1alpha1.WAFCoreRuleSetSelector{
-					Version: "4.14",
-				},
 			},
 		},
 	},
@@ -104,10 +98,7 @@ var wafPolicyTestCases = []wafPolicyTestCase{
 					Mode:        gatewayprotectorkubewardeniov1alpha1.WAFEngineModeBlocking,
 					FailureMode: gatewayprotectorkubewardeniov1alpha1.FailureModeClosed,
 				},
-				CoreRuleSet: gatewayprotectorkubewardeniov1alpha1.WAFCoreRuleSetSelector{
-					Version:       "4.14",
-					ParanoiaLevel: 3,
-				},
+				ParanoiaLevel: 3,
 			},
 		},
 	},
@@ -129,15 +120,11 @@ var wafPolicyTestCases = []wafPolicyTestCase{
 					Mode:        gatewayprotectorkubewardeniov1alpha1.WAFEngineModeOff,
 					FailureMode: gatewayprotectorkubewardeniov1alpha1.FailureModeOpen,
 				},
-				CoreRuleSet: gatewayprotectorkubewardeniov1alpha1.WAFCoreRuleSetSelector{
-					Version: "4.14",
-				},
 			},
 		},
 	},
 	// TODO(user): once ValidateCreate/ValidateUpdate implement real
 	// validation (see their doc comments), add deny cases here, e.g.:
-	//   - coreRuleSet.version referencing an unregistered WAFCoreRuleSet
 	//   - customRulesRefs referencing a WAFRuleSet that doesn't exist
 	//   - a targetRef that duplicates another WAFPolicy's attachment point
 	// each with expectedField/expectedError set to the corresponding

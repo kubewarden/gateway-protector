@@ -1,0 +1,20 @@
+# Scenario: Gateway-level default. This WAFPolicy targets the Gateway
+# directly, so it becomes the default for every HTTPRoute attached to it -
+# no per-route WAFPolicy is needed for routes that are happy with this
+# posture (see route-opt-out.yaml and route-override.yaml in this directory
+# for the two ways a route can deviate from it).
+apiVersion: gateway-protector.kubewarden.io/v1alpha1
+kind: WAFPolicy
+metadata:
+  name: shared-gw-default
+  namespace: gateway-protector-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: shared-gw
+    namespace: infra
+  engine:
+    mode: Detection
+    failureMode: FailOpen
+  paranoiaLevel: 1

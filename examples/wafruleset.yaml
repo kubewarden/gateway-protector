@@ -1,0 +1,19 @@
+# WAFRuleSet is a reusable bundle of custom SecRule directives, referenced by
+# name from one or more WAFPolicy.spec.customRulesRefs entries in the same
+# namespace, so custom rules don't have to be pasted inline in every
+# WAFPolicy that needs them.
+apiVersion: gateway-protector.kubewarden.io/v1alpha1
+kind: WAFRuleSet
+metadata:
+  name: shop-custom-rules
+  namespace: gateway-protector-system
+spec:
+  rules:
+    - id: 1000010
+      directive: |
+        SecRule REQUEST_HEADERS:X-Internal-Health-Check "@streq 1" \
+          "id:1000010,phase:1,pass,nolog,ctl:ruleEngine=Off"
+    - id: 1000011
+      directive: |
+        SecRule ARGS:promo_code "!@rx ^[A-Z0-9]{6,12}$" \
+          "id:1000011,phase:2,deny,status:400,msg:'malformed promo code'"

@@ -6,8 +6,8 @@
 // This is a hand-authored YAML file for now; see docs/processor.md for the
 // full schema reference, matching semantics, and a complete example. A
 // future controller will render this file automatically from
-// WAFPolicy/WAFCoreRuleSet/WAFRuleSet Kubernetes objects (see the CRD types
-// under api/v1alpha1) instead of it being hand-authored.
+// WAFPolicy/WAFRuleSet Kubernetes objects (see the CRD types under
+// api/v1alpha1) instead of it being hand-authored.
 package config
 
 // Config is the root of the processor's data-plane configuration file.

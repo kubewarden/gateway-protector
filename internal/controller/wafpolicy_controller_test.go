@@ -50,9 +50,7 @@ var _ = Describe("WAFPolicy Controller", func() {
 							Mode:        gatewayprotectorkubewardeniov1alpha1.WAFEngineModeBlocking,
 							FailureMode: gatewayprotectorkubewardeniov1alpha1.FailureModeClosed,
 						},
-						CoreRuleSet: gatewayprotectorkubewardeniov1alpha1.WAFCoreRuleSetSelector{
-							Version: "4.14",
-						},
+						ParanoiaLevel: 1,
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())

@@ -22,7 +22,6 @@ type WAFPolicyReconciler struct {
 // +kubebuilder:rbac:groups=gateway-protector.kubewarden.io,resources=wafpolicies,verbs=get;list;watch;create;update;patch;delete,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=gateway-protector.kubewarden.io,resources=wafpolicies/status,verbs=get;update;patch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=gateway-protector.kubewarden.io,resources=wafpolicies/finalizers,verbs=update,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
-// +kubebuilder:rbac:groups=gateway-protector.kubewarden.io,resources=wafcorerulesets,verbs=get;list;watch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=gateway-protector.kubewarden.io,resources=wafrulesets,verbs=get;list;watch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;httproutes,verbs=get;list;watch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
@@ -50,10 +49,10 @@ type WAFPolicyReconciler struct {
 //     running unchanged
 //   - resolve targetRef against the Gateway/HTTPRoute it points at and set
 //     Accepted=False/TargetNotFound when it doesn't resolve
-//   - compile the engine (Core Rule Set version + exclusions + referenced
-//     WAFRuleSet.spec.rules) and push {engines, host+path routing table} to
-//     the processor's data-plane config (see docs/processor.md for that
-//     config's schema)
+//   - compile the engine (embedded Core Rule Set + paranoiaLevel +
+//     anomalyThreshold + exclusions + referenced WAFRuleSet.spec.rules) and
+//     push {engines, host+path routing table} to the processor's data-plane
+//     config (see docs/processor.md for that config's schema)
 //   - render/reconcile a generated AgentgatewayPolicy for the target route
 //     (one per protected route, wiring the shared processor Service as
 //     backendRef, with failureMode set to the strictest of the route's

@@ -9,8 +9,6 @@
 Package v1alpha1 contains API Schema definitions for the gateway-protector.kubewarden.io v1alpha1 API group.
 
 ### Resource Types
-- [WAFCoreRuleSet](#wafcoreruleset)
-- [WAFCoreRuleSetList](#wafcorerulesetlist)
 - [WAFPolicy](#wafpolicy)
 - [WAFPolicyList](#wafpolicylist)
 - [WAFRuleSet](#wafruleset)
@@ -94,7 +92,7 @@ request (or response) is considered an attack.
 
 
 _Appears in:_
-- [WAFCoreRuleSetSelector](#wafcorerulesetselector)
+- [WAFPolicySpec](#wafpolicyspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -117,104 +115,6 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | enabled toggles body inspection for this phase. |  | Required: \{\} <br /> |
 | `maxSize` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#quantity-resource-api)_ | maxSize caps the number of bytes buffered for inspection (e.g. "1Mi").<br />Bodies larger than this are handled per the engine's configured<br />behavior for oversized bodies. Only meaningful when enabled is true. |  | Optional: \{\} <br /> |
-
-
-#### WAFCoreRuleSet
-
-
-
-WAFCoreRuleSet is the Schema for the wafcorerulesets API. It registers a
-Core Rule Set bundle that ships with the processor image and that
-WAFPolicy.coreRuleSet.version can reference.
-
-
-
-_Appears in:_
-- [WAFCoreRuleSetList](#wafcorerulesetlist)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
-| `kind` _string_ | `WAFCoreRuleSet` | | |
-| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
-| `spec` _[WAFCoreRuleSetSpec](#wafcorerulesetspec)_ | spec defines the desired state of WAFCoreRuleSet |  | Required: \{\} <br /> |
-| `status` _[WAFCoreRuleSetStatus](#wafcorerulesetstatus)_ | status defines the observed state of WAFCoreRuleSet |  | Optional: \{\} <br /> |
-
-
-#### WAFCoreRuleSetList
-
-
-
-WAFCoreRuleSetList contains a list of WAFCoreRuleSet
-
-
-
-
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
-| `kind` _string_ | `WAFCoreRuleSetList` | | |
-| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[WAFCoreRuleSet](#wafcoreruleset) array_ |  |  |  |
-
-
-#### WAFCoreRuleSetSelector
-
-
-
-WAFCoreRuleSetSelector selects and tunes the OWASP Core Rule Set bundle a
-WAFPolicy compiles against.
-
-
-
-_Appears in:_
-- [WAFPolicySpec](#wafpolicyspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `version` _string_ | version must match the version of an available WAFCoreRuleSet resource<br />registered in the cluster. |  | Pattern: `^[0-9]+\.[0-9]+(\.[0-9]+)?$` <br />Required: \{\} <br /> |
-| `paranoiaLevel` _integer_ | paranoiaLevel selects the CRS paranoia level (1-4); higher levels<br />enable more (and more false-positive-prone) rules. |  | Maximum: 4 <br />Minimum: 1 <br />Optional: \{\} <br /> |
-| `anomalyThreshold` _[WAFAnomalyThreshold](#wafanomalythreshold)_ | anomalyThreshold sets the inbound/outbound anomaly score thresholds. |  | Optional: \{\} <br /> |
-
-
-#### WAFCoreRuleSetSpec
-
-
-
-WAFCoreRuleSetSpec registers an OWASP Core Rule Set bundle baked into the
-processor image, so it can be referenced from a WAFPolicy's
-coreRuleSet.version.
-
-WAFCoreRuleSet is cluster-scoped: it describes what the processor image
-ships, not a per-namespace preference.
-
-
-
-_Appears in:_
-- [WAFCoreRuleSet](#wafcoreruleset)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `version` _string_ | version is the CRS version this bundle provides (e.g. "4.14").<br />WAFPolicy.coreRuleSet.version must match a registered WAFCoreRuleSet<br />version. |  | Pattern: `^[0-9]+\.[0-9]+(\.[0-9]+)?$` <br />Required: \{\} <br /> |
-| `default` _boolean_ | default marks this bundle as the one used when a WAFPolicy does not<br />pin coreRuleSet.version explicitly. At most one WAFCoreRuleSet should<br />set this to true. |  | Optional: \{\} <br /> |
-| `image` _string_ | image documents which processor image (or digest) ships this bundle.<br />Informational only; the controller does not reconcile against it. |  | Optional: \{\} <br /> |
-
-
-#### WAFCoreRuleSetStatus
-
-
-
-WAFCoreRuleSetStatus defines the observed state of WAFCoreRuleSet.
-
-
-
-_Appears in:_
-- [WAFCoreRuleSet](#wafcoreruleset)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#condition-v1-meta) array_ | conditions represent the current state of the WAFCoreRuleSet resource. |  | Optional: \{\} <br /> |
 
 
 #### WAFCustomRule
@@ -357,7 +257,8 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `targetRef` _[PolicyTargetReference](#policytargetreference)_ | targetRef identifies exactly one Gateway (applies to all its routes,<br />the common default case) or one HTTPRoute (overrides the Gateway<br />default for that route only). |  | Required: \{\} <br /> |
 | `engine` _[WAFEngineSpec](#wafenginespec)_ | engine configures the WAF engine's mode and failure posture. |  | Required: \{\} <br /> |
-| `coreRuleSet` _[WAFCoreRuleSetSelector](#wafcorerulesetselector)_ | coreRuleSet selects and tunes the OWASP Core Rule Set bundle. |  | Required: \{\} <br /> |
+| `paranoiaLevel` _integer_ | paranoiaLevel selects the CRS paranoia level (1-4); higher levels<br />enable more (and more false-positive-prone) rules. Absent means the<br />Core Rule Set's own default (paranoia level 1). |  | Maximum: 4 <br />Minimum: 1 <br />Optional: \{\} <br /> |
+| `anomalyThreshold` _[WAFAnomalyThreshold](#wafanomalythreshold)_ | anomalyThreshold sets the inbound/outbound anomaly score thresholds.<br />Absent means the Core Rule Set's own defaults. |  | Optional: \{\} <br /> |
 | `requestBody` _[WAFBodyInspectionSpec](#wafbodyinspectionspec)_ | requestBody configures request body inspection. |  | Optional: \{\} <br /> |
 | `responseBody` _[WAFBodyInspectionSpec](#wafbodyinspectionspec)_ | responseBody configures response body inspection. |  | Optional: \{\} <br /> |
 | `exclusions` _[WAFExclusion](#wafexclusion) array_ | exclusions silence specific CRS rules (by id or tag), e.g. to resolve a<br />known false positive without lowering the paranoia level. |  | Optional: \{\} <br /> |

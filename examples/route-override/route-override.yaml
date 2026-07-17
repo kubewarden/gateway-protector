@@ -1,0 +1,27 @@
+# Scenario: Route override. This WAFPolicy targets a single HTTPRoute (an
+# admin-only route rule, via sectionName), so it fully REPLACES the
+# Gateway-level default from gateway-default.yaml for that route only - no
+# merging: every other route under shared-gw still gets the Gateway default.
+#
+# Here the override tightens the posture (Blocking + higher paranoia, vs.
+# the Gateway default's permissive Detection mode), since /admin is more
+# sensitive than the rest of the site.
+apiVersion: gateway-protector.kubewarden.io/v1alpha1
+kind: WAFPolicy
+metadata:
+  name: admin-portal-strict
+  namespace: gateway-protector-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: admin-portal
+    namespace: team-shop
+    sectionName: admin
+  engine:
+    mode: Blocking
+    failureMode: FailClosed
+  paranoiaLevel: 3
+  anomalyThreshold:
+    inbound: 5
+    outbound: 4

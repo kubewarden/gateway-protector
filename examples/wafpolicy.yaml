@@ -1,0 +1,38 @@
+# A full-featured WAFPolicy, targeting a Gateway (applies to every route
+# under it - see examples/route-override for the Gateway-default vs.
+# Route-override vs. Route-opt-out scenarios). References the WAFRuleSet
+# registered in wafruleset.yaml.
+apiVersion: gateway-protector.kubewarden.io/v1alpha1
+kind: WAFPolicy
+metadata:
+  name: shop-gateway-default
+  namespace: gateway-protector-system
+spec:
+  # targetRef is namespaced so a policy living in the platform's
+  # gateway-protector-system namespace can target a Gateway/HTTPRoute living
+  # in a different namespace.
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: shared-gw
+    namespace: infra
+  engine:
+    mode: Blocking
+    failureMode: FailClosed
+  paranoiaLevel: 1
+  anomalyThreshold:
+    inbound: 5
+    outbound: 4
+  requestBody:
+    enabled: true
+    maxSize: 1Mi
+  responseBody:
+    enabled: false
+  # exclusions silence specific CRS rules (by id or tag), e.g. to resolve a
+  # known false positive without lowering the paranoia level.
+  exclusions:
+    - byId: [942100, 949110]
+    - byTag: ["attack-sqli"]
+  customRulesRefs:
+    - kind: WAFRuleSet
+      name: shop-custom-rules

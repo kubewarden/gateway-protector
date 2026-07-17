@@ -19,12 +19,6 @@ resources:
   version: v1alpha1
 - api:
     crdVersion: v1
-  domain: gateway-protector.kubewarden.io
-  kind: WAFCoreRuleSet
-  path: github.com/kubewarden/gateway-protector/api/v1alpha1
-  version: v1alpha1
-- api:
-    crdVersion: v1
     namespaced: true
   domain: gateway-protector.kubewarden.io
   kind: WAFRuleSet

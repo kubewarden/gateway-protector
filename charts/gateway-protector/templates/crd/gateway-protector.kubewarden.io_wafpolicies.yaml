@@ -62,41 +62,21 @@ spec:
           spec:
             description: spec defines the desired state of WAFPolicy
             properties:
-              coreRuleSet:
-                description: coreRuleSet selects and tunes the OWASP Core Rule Set
-                  bundle.
+              anomalyThreshold:
+                description: |-
+                  anomalyThreshold sets the inbound/outbound anomaly score thresholds.
+                  Absent means the Core Rule Set's own defaults.
                 properties:
-                  anomalyThreshold:
-                    description: anomalyThreshold sets the inbound/outbound anomaly
-                      score thresholds.
-                    properties:
-                      inbound:
-                        description: inbound is the anomaly score threshold applied
-                          to the request phase.
-                        format: int32
-                        type: integer
-                      outbound:
-                        description: outbound is the anomaly score threshold applied
-                          to the response phase.
-                        format: int32
-                        type: integer
-                    type: object
-                  paranoiaLevel:
-                    description: |-
-                      paranoiaLevel selects the CRS paranoia level (1-4); higher levels
-                      enable more (and more false-positive-prone) rules.
+                  inbound:
+                    description: inbound is the anomaly score threshold applied to
+                      the request phase.
                     format: int32
-                    maximum: 4
-                    minimum: 1
                     type: integer
-                  version:
-                    description: |-
-                      version must match the version of an available WAFCoreRuleSet resource
-                      registered in the cluster.
-                    pattern: ^[0-9]+\.[0-9]+(\.[0-9]+)?$
-                    type: string
-                required:
-                - version
+                  outbound:
+                    description: outbound is the anomaly score threshold applied to
+                      the response phase.
+                    format: int32
+                    type: integer
                 type: object
               customRulesRefs:
                 description: |-
@@ -173,6 +153,15 @@ spec:
                       type: array
                   type: object
                 type: array
+              paranoiaLevel:
+                description: |-
+                  paranoiaLevel selects the CRS paranoia level (1-4); higher levels
+                  enable more (and more false-positive-prone) rules. Absent means the
+                  Core Rule Set's own default (paranoia level 1).
+                format: int32
+                maximum: 4
+                minimum: 1
+                type: integer
               requestBody:
                 description: requestBody configures request body inspection.
                 properties:
@@ -265,7 +254,6 @@ spec:
                 - namespace
                 type: object
             required:
-            - coreRuleSet
             - engine
             - targetRef
             type: object

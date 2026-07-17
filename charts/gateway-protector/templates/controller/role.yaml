@@ -29,15 +29,6 @@ rules:
 - apiGroups:
   - gateway-protector.kubewarden.io
   resources:
-  - wafcorerulesets
-  - wafrulesets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - gateway-protector.kubewarden.io
-  resources:
   - wafpolicies
   verbs:
   - create
@@ -61,6 +52,14 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - gateway-protector.kubewarden.io
+  resources:
+  - wafrulesets
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - gateway.networking.k8s.io
   resources:

@@ -50,7 +50,7 @@ processor:
   # This is hand-authored for now (the default below is an inert example: a
   # single "SecRuleEngine Off" engine and no routes, so a default install
   # protects nothing but still starts cleanly). A future controller will
-  # generate this from WAFPolicy/WAFCoreRuleSet/WAFRuleSet objects instead.
+  # generate this from WAFPolicy/WAFRuleSet objects instead.
   config:
     directives:
       default: |

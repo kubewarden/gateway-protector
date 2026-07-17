@@ -63,27 +63,6 @@ type WAFAnomalyThreshold struct {
 	Outbound int32 `json:"outbound,omitempty"`
 }
 
-// WAFCoreRuleSetSelector selects and tunes the OWASP Core Rule Set bundle a
-// WAFPolicy compiles against.
-type WAFCoreRuleSetSelector struct {
-	// version must match the version of an available WAFCoreRuleSet resource
-	// registered in the cluster.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+(\.[0-9]+)?$`
-	Version string `json:"version"`
-
-	// paranoiaLevel selects the CRS paranoia level (1-4); higher levels
-	// enable more (and more false-positive-prone) rules.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=4
-	ParanoiaLevel int32 `json:"paranoiaLevel,omitempty"`
-
-	// anomalyThreshold sets the inbound/outbound anomaly score thresholds.
-	// +optional
-	AnomalyThreshold WAFAnomalyThreshold `json:"anomalyThreshold,omitempty"`
-}
-
 // WAFBodyInspectionSpec toggles and bounds request/response body inspection.
 type WAFBodyInspectionSpec struct {
 	// enabled toggles body inspection for this phase.
@@ -133,9 +112,18 @@ type WAFPolicySpec struct {
 	// +kubebuilder:validation:Required
 	Engine WAFEngineSpec `json:"engine"`
 
-	// coreRuleSet selects and tunes the OWASP Core Rule Set bundle.
-	// +kubebuilder:validation:Required
-	CoreRuleSet WAFCoreRuleSetSelector `json:"coreRuleSet"`
+	// paranoiaLevel selects the CRS paranoia level (1-4); higher levels
+	// enable more (and more false-positive-prone) rules. Absent means the
+	// Core Rule Set's own default (paranoia level 1).
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=4
+	ParanoiaLevel int32 `json:"paranoiaLevel,omitempty"`
+
+	// anomalyThreshold sets the inbound/outbound anomaly score thresholds.
+	// Absent means the Core Rule Set's own defaults.
+	// +optional
+	AnomalyThreshold *WAFAnomalyThreshold `json:"anomalyThreshold,omitempty"`
 
 	// requestBody configures request body inspection.
 	// +optional

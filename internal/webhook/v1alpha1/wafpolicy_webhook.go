@@ -73,10 +73,10 @@ var _ admission.Validator[*gatewayprotectorkubewardeniov1alpha1.WAFPolicy] = &WA
 //
 // TODO(user): this currently accepts everything unchanged. This admission
 // webhook should additionally:
-//   - dry-compile the composed Coraza directives (Core Rule Set version +
-//     exclusions + referenced WAFRuleSet.spec.rules) and reject invalid
-//     configuration before it reaches the data plane
-//   - verify spec.coreRuleSet.version matches a registered WAFCoreRuleSet
+//   - dry-compile the composed Coraza directives (embedded Core Rule Set +
+//     paranoiaLevel + anomalyThreshold + exclusions + referenced
+//     WAFRuleSet.spec.rules) and reject invalid configuration before it
+//     reaches the data plane
 //   - verify every spec.customRulesRefs entry resolves to an existing
 //     WAFRuleSet in the same namespace
 //   - reject a duplicate targetRef: another WAFPolicy already targeting the

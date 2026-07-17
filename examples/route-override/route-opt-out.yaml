@@ -1,0 +1,20 @@
+# Scenario: Route opt-out. This WAFPolicy targets a single HTTPRoute with
+# engine.mode: Off, disabling protection for that route only - still a
+# platform decision (this object lives in gateway-protector-system, app
+# teams cannot create it), e.g. for a public status page that must never be
+# blocked by a false positive. Every other route under shared-gw is
+# unaffected and keeps the Gateway default from gateway-default.yaml.
+apiVersion: gateway-protector.kubewarden.io/v1alpha1
+kind: WAFPolicy
+metadata:
+  name: public-status-page-off
+  namespace: gateway-protector-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: public-status-page
+    namespace: team-shop
+  engine:
+    mode: "Off"
+    failureMode: FailOpen
