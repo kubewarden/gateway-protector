@@ -18,7 +18,6 @@ spec:
     namespace: infra
   engine:
     mode: Blocking
-    failureMode: FailClosed
   paranoiaLevel: 1
   anomalyThreshold:
     inbound: 5

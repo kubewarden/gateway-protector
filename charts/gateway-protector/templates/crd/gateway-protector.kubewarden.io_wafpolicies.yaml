@@ -110,15 +110,6 @@ spec:
               engine:
                 description: engine configures the WAF engine's mode and failure posture.
                 properties:
-                  failureMode:
-                    description: |-
-                      failureMode controls what happens to traffic when the ext_proc
-                      processor is unreachable. There is intentionally no implicit default;
-                      every WAFPolicy must state its failure posture explicitly.
-                    enum:
-                    - FailClosed
-                    - FailOpen
-                    type: string
                   mode:
                     description: mode selects whether the engine blocks, only logs,
                       or is disabled.
@@ -128,7 +119,6 @@ spec:
                     - "Off"
                     type: string
                 required:
-                - failureMode
                 - mode
                 type: object
               exclusions:

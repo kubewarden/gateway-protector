@@ -292,11 +292,13 @@ collects the generated object automatically.
 **Known constraint:** as of the agentgateway version inspected in
 `docs/agentgateway-extproc.md`, `AgentgatewayPolicy`'s `extProc` has no
 `failureMode` field at all - the agentgateway controller hardcodes
-`FAIL_CLOSED` when translating it. This means
-`WAFPolicy.spec.engine.failureMode: FailOpen` cannot actually be honored
-through generated `AgentgatewayPolicy` objects yet; see that document for
-the full finding and its implications, including a data-plane-validated
-path (carrying a resolved engine key as `ext_proc` metadata) that could
+`FAIL_CLOSED` when translating it. This is why `WAFPolicy` deliberately
+exposes no failure-posture knob: traffic is always failed closed when the
+processor is unreachable, and the API doesn't promise otherwise (see
+`WAFEngineSpec`'s doc comment). If upstream ever exposes it, a
+`failureMode` field can be reintroduced. See that document for the full
+finding and its implications, including a data-plane-validated path
+(carrying a resolved engine key as `ext_proc` metadata) that could
 eventually replace the processor's host+path routing table entirely.
 
 ### Re-evaluation triggers

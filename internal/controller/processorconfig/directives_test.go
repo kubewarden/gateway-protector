@@ -15,8 +15,7 @@ func newTestPolicy(mode gwpv1alpha1.WAFEngineMode) *gwpv1alpha1.WAFPolicy {
 	return &gwpv1alpha1.WAFPolicy{
 		Spec: gwpv1alpha1.WAFPolicySpec{
 			Engine: gwpv1alpha1.WAFEngineSpec{
-				Mode:        mode,
-				FailureMode: gwpv1alpha1.FailureModeClosed,
+				Mode: mode,
 			},
 		},
 	}

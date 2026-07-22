@@ -17,4 +17,3 @@ spec:
     namespace: team-shop
   engine:
     mode: "Off"
-    failureMode: FailOpen

@@ -16,5 +16,4 @@ spec:
     namespace: infra
   engine:
     mode: Detection
-    failureMode: FailOpen
   paranoiaLevel: 1

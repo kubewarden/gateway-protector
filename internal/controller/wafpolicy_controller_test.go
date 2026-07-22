@@ -34,8 +34,7 @@ func newTestWAFPolicyInNamespace(namespace, name string, targetRef gwpv1alpha1.P
 		Spec: gwpv1alpha1.WAFPolicySpec{
 			TargetRef: targetRef,
 			Engine: gwpv1alpha1.WAFEngineSpec{
-				Mode:        gwpv1alpha1.WAFEngineModeBlocking,
-				FailureMode: gwpv1alpha1.FailureModeClosed,
+				Mode: gwpv1alpha1.WAFEngineModeBlocking,
 			},
 			ParanoiaLevel: 1,
 		},

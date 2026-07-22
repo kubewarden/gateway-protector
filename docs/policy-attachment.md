@@ -59,14 +59,14 @@ apiVersion: gateway-protector.kubewarden.io/v1alpha1
 kind: WAFPolicy
 spec:
   targetRef: {kind: Gateway, name: shared-gw, namespace: infra}
-  engine: {mode: Detection, failureMode: FailOpen}
+  engine: {mode: Detection}
 ---
 # Route override: replaces the default above for the "admin" rule only.
 apiVersion: gateway-protector.kubewarden.io/v1alpha1
 kind: WAFPolicy
 spec:
   targetRef: {kind: HTTPRoute, name: admin-portal, namespace: team-shop, sectionName: admin}
-  engine: {mode: Blocking, failureMode: FailClosed}
+  engine: {mode: Blocking}
 ```
 
 every other rule on `admin-portal`, and every other route under `shared-gw`,
@@ -128,7 +128,7 @@ For each `match` in the rule's `spec.matches`:
 - **No merging across attachment levels.** A route-level policy always
   fully replaces a Gateway-level default for the rules it covers; there is
   no way to, say, keep the Gateway default's `paranoiaLevel` while only
-  overriding `failureMode` at the route level.
+  overriding `engine.mode` at the route level.
 - **Multi-parentRef and multi-listener ambiguity** resolve to "first
   matching parentRef" / `"*"` respectively, rather than full per-listener
   fidelity (see above).

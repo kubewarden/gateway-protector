@@ -24,31 +24,18 @@ const (
 	WAFEngineModeOff WAFEngineMode = "Off"
 )
 
-// FailureMode controls what the data plane does when the ext_proc processor
-// is unreachable.
-// +kubebuilder:validation:Enum=FailClosed;FailOpen
-type FailureMode string
-
-const (
-	// FailureModeClosed blocks traffic when the processor is unreachable.
-	FailureModeClosed FailureMode = "FailClosed"
-
-	// FailureModeOpen forwards traffic when the processor is unreachable.
-	FailureModeOpen FailureMode = "FailOpen"
-)
-
-// WAFEngineSpec configures the WAF engine's operating mode and its behavior
-// when the data plane cannot be reached.
+// WAFEngineSpec configures the WAF engine's operating mode.
+//
+// There is deliberately no failure-posture (fail-open/fail-closed) knob
+// here: the data plane this project integrates with (agentgateway's
+// ext_proc wiring) hardcodes fail-closed when the processor is
+// unreachable and exposes no way to configure it, so this API doesn't
+// promise a behavior it cannot deliver. If upstream ever exposes it, a
+// failureMode field can be reintroduced.
 type WAFEngineSpec struct {
 	// mode selects whether the engine blocks, only logs, or is disabled.
 	// +kubebuilder:validation:Required
 	Mode WAFEngineMode `json:"mode"`
-
-	// failureMode controls what happens to traffic when the ext_proc
-	// processor is unreachable. There is intentionally no implicit default;
-	// every WAFPolicy must state its failure posture explicitly.
-	// +kubebuilder:validation:Required
-	FailureMode FailureMode `json:"failureMode"`
 }
 
 // WAFAnomalyThreshold sets the CRS anomaly-scoring thresholds above which a

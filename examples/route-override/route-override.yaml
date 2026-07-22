@@ -20,7 +20,6 @@ spec:
     sectionName: admin
   engine:
     mode: Blocking
-    failureMode: FailClosed
   paranoiaLevel: 3
   anomalyThreshold:
     inbound: 5

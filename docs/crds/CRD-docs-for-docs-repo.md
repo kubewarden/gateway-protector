@@ -16,25 +16,6 @@ Package v1alpha1 contains API Schema definitions for the gateway-protector.kubew
 
 
 
-#### FailureMode
-
-_Underlying type:_ _string_
-
-FailureMode controls what the data plane does when the ext_proc processor
-is unreachable.
-
-_Validation:_
-- Enum: [FailClosed FailOpen]
-
-_Appears in:_
-- [WAFEngineSpec](#wafenginespec)
-
-| Field | Description |
-| --- | --- |
-| `FailClosed` | FailureModeClosed blocks traffic when the processor is unreachable.<br /> |
-| `FailOpen` | FailureModeOpen forwards traffic when the processor is unreachable.<br /> |
-
-
 #### LocalRuleSetReference
 
 
@@ -158,8 +139,14 @@ _Appears in:_
 
 
 
-WAFEngineSpec configures the WAF engine's operating mode and its behavior
-when the data plane cannot be reached.
+WAFEngineSpec configures the WAF engine's operating mode.
+
+There is deliberately no failure-posture (fail-open/fail-closed) knob
+here: the data plane this project integrates with (agentgateway's
+ext_proc wiring) hardcodes fail-closed when the processor is
+unreachable and exposes no way to configure it, so this API doesn't
+promise a behavior it cannot deliver. If upstream ever exposes it, a
+failureMode field can be reintroduced.
 
 
 
@@ -169,7 +156,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `mode` _[WAFEngineMode](#wafenginemode)_ | mode selects whether the engine blocks, only logs, or is disabled. |  | Enum: [Blocking Detection Off] <br />Required: \{\} <br /> |
-| `failureMode` _[FailureMode](#failuremode)_ | failureMode controls what happens to traffic when the ext_proc<br />processor is unreachable. There is intentionally no implicit default;<br />every WAFPolicy must state its failure posture explicitly. |  | Enum: [FailClosed FailOpen] <br />Required: \{\} <br /> |
 
 
 #### WAFExclusion
