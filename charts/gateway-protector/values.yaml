@@ -43,16 +43,3 @@ processor:
     requests:
       cpu: 100m
       memory: 128Mi
-  # config is the processor's data-plane configuration: Coraza/SecLang
-  # directive blocks keyed by engine key, plus the host+pathPrefix routing
-  # table that selects one per request (see internal/processor/config).
-  #
-  # This is hand-authored for now (the default below is an inert example: a
-  # single "SecRuleEngine Off" engine and no routes, so a default install
-  # protects nothing but still starts cleanly). A future controller will
-  # generate this from WAFPolicy/WAFRuleSet objects instead.
-  config:
-    directives:
-      default: |
-        SecRuleEngine Off
-    routes: []

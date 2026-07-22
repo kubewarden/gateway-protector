@@ -49,8 +49,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `kind` _string_ | kind is the kind of the referenced object. Currently only "WAFRuleSet"<br />is supported. |  | Enum: [WAFRuleSet] <br />Required: \{\} <br /> |
-| `name` _[ObjectName](#objectname)_ | name is the name of the referenced WAFRuleSet. |  | Required: \{\} <br /> |
+| `name` _string_ | name is the name of the referenced WAFRuleSet, in the same namespace<br />as the WAFPolicy referencing it. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
 
 
 #### PolicyTargetReference
@@ -131,8 +130,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `id` _integer_ | id is the numeric SecRule id. It is the author's responsibility to keep<br />ids unique within a WAFRuleSet and outside of the ranges reserved by<br />the Core Rule Set and other WAFRuleSet objects referenced by the same<br />WAFPolicy; the admission webhook's dry-compile step (see TODO in<br />internal/webhook/v1alpha1/wafpolicy_webhook.go) additionally enforces<br />whatever uniqueness rules Coraza itself requires. |  | Required: \{\} <br /> |
-| `directive` _string_ | directive is one or more raw SecRule lines composing this rule. |  | Required: \{\} <br /> |
+| `id` _integer_ | id is the numeric SecRule id. It must be in the site-local range<br />1-99999, which is the SecLang convention reserved for a site's own<br />custom rules (as opposed to 100000-899999, historically assigned to<br />various commercial/community rule vendors; 900000-999999, the OWASP<br />Core Rule Set itself; 9500000-9599999, registered CRS plugins; and<br />10000000-10000099, reserved by gateway-protector for its own<br />generated directives). It is<br />the author's responsibility to keep ids unique within a WAFRuleSet<br />and across every other WAFRuleSet referenced by the same WAFPolicy.<br />This validates the declared id field only, not any id that might<br />also appear inside the raw directive text below - a mismatch between<br />the two is still only caught at dry-compile time. |  | Required: \{\} <br /> |
+| `directive` _string_ | directive is one or more raw SecRule lines composing this rule. |  | MinLength: 1 <br />Required: \{\} <br /> |
 
 
 #### WAFEngineMode
@@ -262,7 +261,7 @@ _Appears in:_
 | `requestBody` _[WAFBodyInspectionSpec](#wafbodyinspectionspec)_ | requestBody configures request body inspection. |  | Optional: \{\} <br /> |
 | `responseBody` _[WAFBodyInspectionSpec](#wafbodyinspectionspec)_ | responseBody configures response body inspection. |  | Optional: \{\} <br /> |
 | `exclusions` _[WAFExclusion](#wafexclusion) array_ | exclusions silence specific CRS rules (by id or tag), e.g. to resolve a<br />known false positive without lowering the paranoia level. |  | Optional: \{\} <br /> |
-| `customRulesRefs` _[LocalRuleSetReference](#localrulesetreference) array_ | customRulesRefs references WAFRuleSet objects, in the same namespace as<br />this WAFPolicy, whose custom SecRule directives are compiled into the<br />engine alongside the Core Rule Set. |  | Optional: \{\} <br /> |
+| `customRulesRefs` _[LocalRuleSetReference](#localrulesetreference) array_ | customRulesRefs references WAFRuleSet objects, in the same namespace as<br />this WAFPolicy, whose custom SecRule directives are compiled into the<br />engine alongside the Core Rule Set. Referenced WAFRuleSets are<br />rendered in namespace/name order, not the order listed here (this is<br />a listType=map, so list order isn't meaningful and isn't preserved<br />across a server-side-apply merge); SecLang rules that depend on a<br />specific relative order must be placed together within a single<br />WAFRuleSet, whose own spec.rules order is preserved. |  | Optional: \{\} <br /> |
 
 
 #### WAFPolicyStatus

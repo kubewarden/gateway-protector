@@ -28,6 +28,11 @@ spec:
           image: '{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}'
           imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
           name: controller
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           securityContext:
             {{ include "gateway-protector.securityContext" . | nindent 12 }}
           livenessProbe:

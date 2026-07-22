@@ -6,6 +6,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -73,13 +74,13 @@ func newTestHTTPRoute(name string, rules ...gatewayv1.HTTPRouteRule) *gatewayv1.
 }
 
 // newTestWAFRuleSet builds a minimal, valid WAFRuleSet (spec.rules requires
-// at least one entry).
-func newTestWAFRuleSet(namespace, name string) *gwpv1alpha1.WAFRuleSet {
+// at least one entry) in the "default" namespace, like newTestHTTPRoute.
+func newTestWAFRuleSet(name string) *gwpv1alpha1.WAFRuleSet {
 	return &gwpv1alpha1.WAFRuleSet{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: gwpv1alpha1.WAFRuleSetSpec{
 			Rules: []gwpv1alpha1.WAFCustomRule{
-				{ID: 1000001, Directive: `SecRule &REQUEST_HEADERS "@eq 0" "id:1000001,phase:1,pass,nolog"`},
+				{ID: 10001, Directive: `SecRule &REQUEST_HEADERS "@eq 0" "id:10001,phase:1,pass,nolog"`},
 			},
 		},
 	}
@@ -186,7 +187,7 @@ var _ = Describe("WAFPolicy Controller", func() {
 			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, policy)).To(Succeed()) })
 		})
 
-		It("sets Accepted=True/Accepted and Programmed=False/Pending, with ObservedGeneration kept current", func() {
+		It("sets Accepted=True/Accepted and, once the config reconciler catches up, Programmed=True/Programmed", func() {
 			Eventually(acceptedStatus(ctx, key)).Should(Equal(metav1.ConditionTrue))
 
 			policy := fetchPolicy(ctx, key)()
@@ -195,15 +196,40 @@ var _ = Describe("WAFPolicy Controller", func() {
 			Expect(accepted.Reason).To(Equal(gwpv1alpha1.ConditionReasonAccepted))
 			Expect(accepted.ObservedGeneration).To(Equal(policy.Generation))
 
-			programmed := programmedCondition(policy)
-			Expect(programmed).NotTo(BeNil())
-			Expect(programmed.Status).To(Equal(metav1.ConditionFalse))
-			Expect(programmed.Reason).To(Equal(gwpv1alpha1.ConditionReasonPending))
-			Expect(programmed.ObservedGeneration).To(Equal(policy.Generation))
+			// Programmed is owned by ProcessorConfigReconciler once
+			// Accepted=True (see wafpolicy-lifecycle.md's "Programming"
+			// section): it runs asynchronously, watching WAFPolicy changes
+			// itself, so wait for it rather than asserting synchronously.
+			// This Gateway has no HTTPRoute attached to it yet, so the
+			// policy compiles but currently covers zero routes - still
+			// Programmed=True (compiled and published is what matters, not
+			// whether anything currently uses the engine).
+			Eventually(func() *metav1.Condition {
+				updated := fetchPolicy(ctx, key)()
+				if updated == nil {
+					return nil
+				}
+
+				return programmedCondition(updated)
+			}).Should(And(
+				Not(BeNil()),
+				HaveField("Status", metav1.ConditionTrue),
+				HaveField("Reason", gwpv1alpha1.ConditionReasonProgrammed),
+			))
 
 			By("bumping the policy's generation")
-			policy.Spec.ParanoiaLevel = 2
-			Expect(k8sClient.Update(ctx, policy)).To(Succeed())
+			var generation int64
+			Eventually(func() error {
+				current := fetchPolicy(ctx, key)()
+				current.Spec.ParanoiaLevel = 3
+				if err := k8sClient.Update(ctx, current); err != nil {
+					return err
+				}
+
+				generation = current.Generation
+
+				return nil
+			}).Should(Succeed())
 
 			Eventually(func() int64 {
 				updated := fetchPolicy(ctx, key)()
@@ -217,7 +243,7 @@ var _ = Describe("WAFPolicy Controller", func() {
 				}
 
 				return condition.ObservedGeneration
-			}).Should(Equal(policy.Generation))
+			}).Should(Equal(generation))
 		})
 	})
 
@@ -458,7 +484,7 @@ var _ = Describe("WAFPolicy Controller", func() {
 				Namespace: "default",
 			})
 			policy.Spec.CustomRulesRefs = []gwpv1alpha1.LocalRuleSetReference{
-				{Kind: "WAFRuleSet", Name: "does-not-exist"},
+				{Name: "does-not-exist"},
 			}
 			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
 			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, policy)).To(Succeed()) })
@@ -484,7 +510,7 @@ var _ = Describe("WAFPolicy Controller", func() {
 			Expect(k8sClient.Create(ctx, gw)).To(Succeed())
 			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, gw)).To(Succeed()) })
 
-			ruleSet := newTestWAFRuleSet("default", ruleSetName)
+			ruleSet := newTestWAFRuleSet(ruleSetName)
 			Expect(k8sClient.Create(ctx, ruleSet)).To(Succeed())
 			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, ruleSet)).To(Succeed()) })
 
@@ -495,7 +521,7 @@ var _ = Describe("WAFPolicy Controller", func() {
 				Namespace: "default",
 			})
 			policy.Spec.CustomRulesRefs = []gwpv1alpha1.LocalRuleSetReference{
-				{Kind: "WAFRuleSet", Name: ruleSetName},
+				{Name: ruleSetName},
 			}
 			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
 			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, policy)).To(Succeed()) })
@@ -504,6 +530,25 @@ var _ = Describe("WAFPolicy Controller", func() {
 		It("sets Accepted=True/Accepted", func() {
 			Eventually(acceptedStatus(ctx, key)).Should(Equal(metav1.ConditionTrue))
 			Expect(acceptedReason(ctx, key)()).To(Equal(gwpv1alpha1.ConditionReasonAccepted))
+		})
+	})
+
+	Context("when customRulesRefs contains a duplicate name", func() {
+		It("is rejected by the API server (spec.customRulesRefs is a listType=map keyed by name)", func() {
+			policy := newTestWAFPolicy("duplicate-refs-policy", gwpv1alpha1.PolicyTargetReference{
+				Group:     gatewayv1.GroupName,
+				Kind:      "Gateway",
+				Name:      "duplicate-refs-gw",
+				Namespace: "default",
+			})
+			policy.Spec.CustomRulesRefs = []gwpv1alpha1.LocalRuleSetReference{
+				{Name: "shared-rules"},
+				{Name: "shared-rules"},
+			}
+
+			err := k8sClient.Create(ctx, policy)
+			Expect(err).To(HaveOccurred())
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
 		})
 	})
 
@@ -594,7 +639,7 @@ var _ = Describe("WAFPolicy Controller", func() {
 				Namespace: "default",
 			})
 			policy.Spec.CustomRulesRefs = []gwpv1alpha1.LocalRuleSetReference{
-				{Kind: "WAFRuleSet", Name: ruleSetName},
+				{Name: ruleSetName},
 			}
 			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
 			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, policy)).To(Succeed()) })
@@ -604,7 +649,7 @@ var _ = Describe("WAFPolicy Controller", func() {
 			Eventually(acceptedStatus(ctx, key)).Should(Equal(metav1.ConditionFalse))
 			Expect(acceptedReason(ctx, key)()).To(Equal(gwpv1alpha1.ConditionReasonInvalid))
 
-			ruleSet := newTestWAFRuleSet("default", ruleSetName)
+			ruleSet := newTestWAFRuleSet(ruleSetName)
 			Expect(k8sClient.Create(ctx, ruleSet)).To(Succeed())
 			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, ruleSet)).To(Succeed()) })
 

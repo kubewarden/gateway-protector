@@ -8,9 +8,9 @@ and, eventually, DLP (response-phase redact/mask/block) with one network hop ins
 
 The processor has no Kubernetes API dependency: it is configured entirely by a local YAML file (see
 [Configuration](#configuration) below) and knows nothing about `WAFPolicy`/
-`WAFRuleSet` objects. A future controller will render that config file automatically from those CRDs;
-today it is hand-authored (see `charts/gateway-protector/values.yaml`'s `processor.config` for the
-chart-installed default).
+`WAFRuleSet` objects. The controller renders that config file from those objects and publishes it to
+a ConfigMap it owns (see `internal/controller/processorconfig` and `internal/controller/processor_config_reconciler.go`), which the chart-installed processor Deployment mounts - see
+[Deployment](#deployment).
 
 ## Command-line flags
 
@@ -40,7 +40,9 @@ directives:
 
 # routes maps host+pathPrefix pairs to the engine that protects them.
 routes:
-  - host: <host>            # matched against :authority/Host
+  - host: <host>            # matched against :authority/Host - an exact hostname, "*.<suffix>"
+                             # (any strict subdomain of suffix), or "*" (any host) - see "Matching
+                             # semantics" below
     pathPrefix: <pathPrefix> # matched against :path
     waf:
       engineKey: <engineKey> # must exist in `directives`; omit `waf` entirely for a route with no engine attached
@@ -49,18 +51,30 @@ routes:
 ### Matching semantics
 
 For each request, the processor resolves the WAF engine as follows (see
-`internal/processor/config/snapshot.go`):
+`internal/processor/config/snapshot.go`). This is the *request-time* half of
+matching; see `docs/policy-attachment.md` for how the controller decides
+which `WAFPolicy` governs a route in the first place, and how that becomes
+the `host`/`pathPrefix` entries matched below:
 
-1. **Host** — an exact match against `:authority`/`Host` is tried first. If none matches and the
-   host has a `:port` suffix, the port is stripped and the lookup is retried once more (an IPv6
-   literal like `[::1]:8443` is handled correctly: only the port after the closing `]` is stripped).
-2. **Path** — among the routes for the matched host, the **longest matching `pathPrefix`** wins,
-   so a more specific route (e.g. `/health`) can override a broader one (e.g. `/`) for the same host.
+1. **Host** — tried in this order, each fully exhausted before falling through to the next:
+   1. an exact match against `:authority`/`Host`;
+   2. the same host with any `:port` suffix stripped, still matched exactly (an IPv6 literal like
+      `[::1]:8443` is handled correctly: only the port after the closing `]` is stripped);
+   3. a wildcard route (`host: "*.example.com"`), matched against the host and then the
+      port-stripped host - it matches any strict subdomain of the suffix (`shop.example.com`) but
+      **not** the bare suffix itself (`example.com`); when more than one wildcard route matches,
+      the most specific (longest) suffix wins (`*.internal.example.com` over `*.example.com`);
+   4. a catch-all route (`host: "*"`), matching any host at all.
+2. **Path** — among the routes for the matched host (whichever step above matched), the **longest
+   matching `pathPrefix`** wins, so a more specific route (e.g. `/health`) can override a broader
+   one (e.g. `/`) for the same host.
 3. **No match at all** — the request is **not blocked**; it continues unprotected. This is
    intentional: classification (which requests get inspected) is meant to live in the gateway's
    native route table (via policy attachment), not be re-derived here from an ever-growing host
    inventory. The processor's routing table exists purely to pick *which* engine applies once the
-   gateway has already decided a request should be sent through `ext_proc` at all.
+   gateway has already decided a request should be sent through `ext_proc` at all. A route with no
+   matching host at all (not even a catch-all) is how the controller expresses that: it simply
+   doesn't emit an entry.
 4. **Route matches but has no `waf` key** — distinct from "no route matched": the route is
    recognized, but no engine runs. This is reserved for a future DLP-only route (once DLP exists as
    its own response-phase engine, independent of the WAF request-phase engine).
@@ -79,9 +93,10 @@ This is deliberate, not an oversight: Coraza applies SecLang directives *before*
 would silently override an engine that explicitly opts out (`SecRequestBodyAccess Off`), and would
 waste memory buffering bodies for engines that never asked for it (e.g. the chart's default inert
 `SecRuleEngine Off` engine). It is also where `WAFPolicy.spec.requestBody`/`spec.responseBody` (see
-`api/v1alpha1.WAFBodyInspectionSpec`) are expected to land once the controller renders this config
-as directives: `enabled`/`maxSize` become `SecRequestBodyAccess`/`SecRequestBodyLimit` (etc.) in the
-rendered engine, rather than being threaded through as separate processor-level settings.
+`api/v1alpha1.WAFBodyInspectionSpec`) land once rendered as directives:
+`enabled`/`maxSize` become `SecRequestBodyAccess`/`SecRequestBodyLimit` (etc.) in the
+rendered engine (see `internal/controller/processorconfig.RenderDirectives`), rather than being
+threaded through as separate processor-level settings.
 
 ### Example
 
@@ -172,9 +187,14 @@ not a correctness bug - worth revisiting before recommending frequent reloads in
   against the health service above.
 - `service.yaml` — a `ClusterIP` Service on port `9000`. This is the `backendRef` a future
   `AgentgatewayPolicy` (generated by the controller) will point `ext_proc` traffic at.
-- `configmap.yaml` — renders `values.yaml`'s `processor.config`. The chart default is intentionally
-  inert (a single `SecRuleEngine Off` engine, zero routes), so a default `helm install` starts
-  cleanly without protecting anything until an operator supplies a real configuration.
+
+The ConfigMap itself (name: `controller.ProcessorConfigMapName`, currently
+`gateway-protector-processor-config`) is **not** rendered by this chart: the controller owns it,
+creating/updating it from `WAFPolicy`/`WAFRuleSet` objects (see
+`internal/controller/processor_config_reconciler.go`) in its own namespace - the same namespace the
+processor Deployment above runs in. A fresh install with no `WAFPolicy` objects yet still starts
+cleanly: the controller publishes an inert default (a single `SecRuleEngine Off` engine, zero
+routes) as soon as it starts, before any `WAFPolicy` needs to exist.
 
 ## Current limitations / roadmap
 
@@ -182,7 +202,8 @@ not a correctness bug - worth revisiting before recommending frequent reloads in
   redaction, masking, or response-body mutation yet.
 - **No WebSocket-specific handling** - a long-lived upgraded connection is just a single ext_proc
   stream/Coraza transaction like any other request; there's no dedicated state machine for it.
-- **Config is hand-authored** - the controller does not yet render this file from
-  `WAFPolicy`/`WAFRuleSet` objects.
+- **Config distribution is ConfigMap + watch (MVP)** - a future gRPC config stream (see the design
+  notes) would let the controller receive an ack once the processor has actually compiled and
+  applied a new config, instead of the fire-and-forget ConfigMap write used today.
 - **No mTLS** between agentgateway and the processor yet.
 - **No `WAFCloser` cleanup on reload** (see "Hot reload" above).

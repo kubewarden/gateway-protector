@@ -27,9 +27,16 @@ type Config struct {
 
 // Route associates a host+pathPrefix with the WAF engine that protects it.
 type Route struct {
-	// Host is matched against the request's :authority/Host header. An
-	// exact match is tried first; if none matches, the port suffix (if
-	// any) is stripped and the lookup is retried (see
+	// Host is matched against the request's :authority/Host header. It is
+	// one of:
+	//   - an exact hostname (e.g. "shop.example.com")
+	//   - a wildcard "*.<suffix>" (e.g. "*.example.com"), matching any
+	//     strict subdomain of suffix (not the bare suffix itself)
+	//   - the catch-all "*", matching any host
+	//
+	// An exact match is tried first; if none matches, the port suffix (if
+	// any) is stripped and the exact lookup is retried; then the most
+	// specific matching wildcard; then the catch-all (see
 	// internal/processor/config/snapshot.go for the full lookup order).
 	Host string `yaml:"host"`
 

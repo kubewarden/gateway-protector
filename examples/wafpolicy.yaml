@@ -34,5 +34,4 @@ spec:
     - byId: [942100, 949110]
     - byTag: ["attack-sqli"]
   customRulesRefs:
-    - kind: WAFRuleSet
-      name: shop-custom-rules
+    - name: shop-custom-rules

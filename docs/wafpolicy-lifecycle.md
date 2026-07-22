@@ -13,8 +13,14 @@ See also:
   `WAFPolicySpec`/`WAFPolicyStatus`.
 - `api/v1alpha1/wafpolicy_types.go` and `api/v1alpha1/common_types.go` — the
   authoritative Go types and condition constants.
-- `docs/processor.md` — the data-plane config schema the controller pushes to
-  the processor once engine compilation (§3 below) is implemented.
+- `docs/processor.md` — the data-plane config schema the controller renders
+  and publishes (§3 below).
+- `docs/policy-attachment.md` — the deep dive on exactly which `WAFPolicy`
+  governs a given `HTTPRoute` rule (precedence across attachment levels,
+  multi-parentRef/multi-listener resolution, and how that decision becomes
+  the processor's routing table).
+- `docs/agentgateway-extproc.md` — research notes on how agentgateway wires
+  `ext_proc` traffic, feeding the still-planned Gateway wiring (§4 below).
 - `examples/route-override/` — worked examples of the three attachment
   scenarios described in [Attachment model](#attachment-model).
 
@@ -40,7 +46,9 @@ Resolution between the two attachment levels is **most-specific-wins**, with
 
 `examples/route-override/` contains one manifest for each of the last three
 scenarios (`gateway-default.yaml`, `route-override.yaml`,
-`route-opt-out.yaml`).
+`route-opt-out.yaml`). See `docs/policy-attachment.md` for the exact
+precedence rules (including `sectionName` and multi-parentRef resolution)
+behind this summary.
 
 ## Lifecycle overview
 
@@ -50,7 +58,7 @@ scenarios (`gateway-default.yaml`, `route-override.yaml`,
         ▼                                                  ▼
  ┌──────────────┐   ┌───────────────┐   ┌──────────────┐  garbage-
  │  Admission   │──►│  Acceptance   │──►│  Programming │  collected
- │  (webhook)   │   │ (implemented) │   │  (planned)   │  (no finalizer)
+ │  (webhook)   │   │ (implemented) │   │(implemented) │  (no finalizer)
  └──────────────┘   └───────┬───────┘   └──────┬───────┘
                             │                  │
                      Accepted condition   Programmed condition
@@ -75,7 +83,11 @@ validation (not yet implemented):
   `paranoiaLevel` + `anomalyThreshold` + `exclusions` + referenced
   `WAFRuleSet.spec.rules`), so an invalid configuration fails the `apply`
   itself with the compile error, instead of being stored and only surfacing
-  later as a status condition.
+  later as a status condition. This dry-compile step already exists - see
+  `internal/controller/processorconfig.CorazaDryCompile` - but today only
+  runs during [Programming](#3-programming-implemented), after the object
+  is already stored (surfacing as `Programmed=False/CompileFailed`); moving
+  it into the webhook remains a planned improvement for faster feedback.
 - Rejecting a duplicate `targetRef` (another `WAFPolicy` already targeting the
   exact same attachment point) as an admission-time `Conflicted` rejection,
   rather than only a status condition after the fact.
@@ -167,47 +179,151 @@ today, in order, for the `WAFPolicy` being reconciled:
    Failure sets `Accepted=False, reason=Invalid`.
 
 4. **Acceptance.** Once all of the above succeed, the policy gets
-   `Accepted=True, reason=Accepted`. At this point `Programmed` is set to
-   `False, reason=Pending` — see below, this is as far as the reconciler goes
-   today.
+   `Accepted=True, reason=Accepted`. `Programmed` is left untouched by this
+   step - see [Programming](#3-programming-implemented) below, which owns it
+   from this point on.
 
-### 3. Programming (planned)
+### 3. Programming (implemented)
 
-Not implemented yet. Once a `WAFPolicy` is `Accepted=True`, the reconciler is
-expected to:
+Once a `WAFPolicy` is `Accepted=True`, a second, singleton reconciler -
+`ProcessorConfigReconciler` (`internal/controller/processor_config_reconciler.go`)
+- rebuilds the processor's *entire* data-plane config from *every* currently
+Accepted `WAFPolicy` (not just the one that changed: the published config is
+one global artifact, not a per-policy one) and sets `Programmed` on each of
+them accordingly:
 
-- Render the effective Coraza/SecLang directives for the attachment point:
-  the embedded Core Rule Set, tuned by `paranoiaLevel` and
-  `anomalyThreshold`, narrowed by `exclusions`, and extended with every
-  referenced `WAFRuleSet.spec.rules` directive.
-- Compute an **engine key** — a hash of those rendered directives — so that
-  two attachment points sharing byte-identical configuration reuse the same
-  compiled engine in the data plane instead of one per policy/route.
-- Push `{engineKey → directives}` plus a host+path routing table (mapping
-  every route protected by this policy to its engine key) to the processor —
-  see `docs/processor.md` for that config's exact schema and matching
-  semantics.
-- Once the processor acknowledges the new config is compiled and live, set
-  `Programmed=True, reason=Programmed`.
+1. **Render directives** (`internal/controller/processorconfig.RenderDirectives`)
+   for each Accepted policy: the embedded Core Rule Set (skipped entirely for
+   `mode: Off`, which renders just `SecRuleEngine Off`), tuned by
+   `paranoiaLevel`/`anomalyThreshold`, `requestBody`/`responseBody` access
+   directives, extended with every referenced `WAFRuleSet.spec.rules`
+   directive, narrowed by `exclusions`. Rendering is canonical: referenced
+   `WAFRuleSet`s are emitted in namespace/name order rather than
+   `customRulesRefs` order (which isn't semantically meaningful - see that
+   field's doc comment), and `exclusions` are pooled, deduplicated, and
+   sorted before being emitted as a single `SecRuleRemoveById` line plus one
+   `SecRuleRemoveByTag` per tag. This makes step 2's deduplication effective
+   across policies that are semantically equivalent but were written (or
+   merged by server-side-apply) with their refs/exclusions in a different
+   order or split differently - not just across byte-identical specs. The
+   `paranoiaLevel`/`anomalyThreshold` override `SecAction` uses rule id
+   `10000001`, part of the `10000000`-`10000099` block gateway-protector
+   reserves for its own generated directives; `WAFCustomRule.id` (used by
+   `WAFRuleSet.spec.rules`) is validated at admission to the `1`-`99999`
+   site-local range precisely so it can never collide with that block, or
+   with the OWASP Core Rule Set's own `900000`-`999999` range.
+
+2. **Deduplicate by engine key** - a hash of the rendered directives
+   (`processorconfig.EngineKey`) - so byte-identical configuration from
+   different policies shares one compiled engine.
+3. **Dry-compile** each new engine's directives in isolation
+   (`processorconfig.CorazaDryCompile`, the same Coraza compile path the
+   processor itself uses). A policy whose directives fail to compile is
+   **excluded** from the published config - along with every route it would
+   have covered - rather than blocking every other policy's config from
+   being published; it gets `Programmed=False, reason=CompileFailed` with
+   the compiler error as the message.
+4. **Build the host+path routing table** (`processorconfig.Build`): for
+   every `HTTPRoute` rule, resolve the effective policy the same
+   most-specific-wins way §2 describes (route-rule override > whole-route
+   override > Gateway-listener default > Gateway default), then register an
+   entry per hostname (the route's own `spec.hostnames`, falling back to the
+   matched listener's hostname, or `"*"` when that's ambiguous) and per path
+   match (skipping `RegularExpression` matches, which the processor's
+   prefix-based table cannot represent) - see `docs/policy-attachment.md`
+   for the exact precedence, fallback order, and documented limitations.
+5. **Publish** the result (`ConfigPublisher`; `ConfigMapPublisher` is the
+   only implementation today) by creating/updating a ConfigMap this
+   controller owns (name: `controller.ProcessorConfigMapName`, currently
+   `gateway-protector-processor-config`, in the controller's own namespace),
+   which the processor Deployment mounts and hot-reloads from (see
+   `docs/processor.md`).
+6. **Set `Programmed`** on every Accepted policy considered in step 4:
+   `True, reason=Programmed` once its engine is compiled and published -
+   regardless of whether it currently covers any route (an Accepted policy
+   on a `Gateway` with no `HTTPRoute`s yet is still fully live, simply
+   unused for now) - or `False, reason=CompileFailed` per step 3.
+
+Because this reconciler is a singleton watching `WAFPolicy`, `WAFRuleSet`,
+`Gateway`, and `HTTPRoute` events (any of which can change what the config
+should contain), any relevant change re-triggers the *entire* rebuild, not
+just the changed object's slice of it. It also primes the processor's
+ConfigMap once at startup (even before any `WAFPolicy` exists), so a fresh
+install always starts with a valid, inert config instead of a missing
+ConfigMap.
+
+**Known limitation:** with ConfigMap + inotify-reload distribution, there is
+no acknowledgment from the processor that a published config was actually
+compiled and is live - `Programmed=True` means "published", and the engine
+typically becomes live within the processor's reload latency (well under a
+second in practice, see `docs/processor.md`'s "Hot reload"), not
+synchronously with the condition update. A future gRPC config stream (see
+the project's design notes) would let `Programmed=True` mean a real,
+per-replica compiled acknowledgment instead.
+
+**Scalability:** rebuilding the config touches every accepted policy and
+every `HTTPRoute`, so keeping each rebuild cheap matters once either grows
+into the thousands. Two things keep it that way:
+
+- **Compile memoization** (`processorconfig.CompileCache`): dry-compiling a
+  Core Rule Set engine costs tens of milliseconds and non-trivial
+  allocations, so `ProcessorConfigReconciler` only ever compiles a given
+  engine key once and reuses the outcome (success or failure) across
+  reconciles, evicting only the keys that stopped being part of the current
+  world on each pass. A rebuild triggered by, say, an unrelated `HTTPRoute`
+  edit that doesn't change any policy's effective directives recompiles
+  nothing.
+- **Watch predicates** (see [Re-evaluation triggers](#re-evaluation-triggers)
+  below) filter out status-only updates before they even reach the
+  reconciler, so the gateway implementation's routine `HTTPRoute`/`Gateway`
+  status churn - which can be very frequent - never triggers a rebuild at
+  all.
 
 ### 4. Gateway wiring (planned)
 
-Also not implemented yet. For every route actually protected by an accepted
+Not implemented yet. For every route actually protected by an accepted
 `WAFPolicy`, the reconciler is expected to render/reconcile a generated
 `AgentgatewayPolicy` object that wires that route's traffic through the
 processor's `ext_proc` service (`spec.traffic.extProc`): the shared processor
-Service as `backendRef`, `failureMode` set to the policy's
-`spec.engine.failureMode`, and `processingOptions` sized to what the engine
+Service as `backendRef`, and `processingOptions` sized to what the engine
 actually needs (e.g. only buffering the request body when
 `spec.requestBody.enabled` is true). Each generated `AgentgatewayPolicy` is
 owned by the route it protects, so deleting or unattaching the route garbage
 collects the generated object automatically.
 
+**Known constraint:** as of the agentgateway version inspected in
+`docs/agentgateway-extproc.md`, `AgentgatewayPolicy`'s `extProc` has no
+`failureMode` field at all - the agentgateway controller hardcodes
+`FAIL_CLOSED` when translating it. This means
+`WAFPolicy.spec.engine.failureMode: FailOpen` cannot actually be honored
+through generated `AgentgatewayPolicy` objects yet; see that document for
+the full finding and its implications, including a data-plane-validated
+path (carrying a resolved engine key as `ext_proc` metadata) that could
+eventually replace the processor's host+path routing table entirely.
+
 ### Re-evaluation triggers
 
-A `WAFPolicy` is re-reconciled whenever any of the following changes, via the
-watches registered in `SetupWithManager`
-(`internal/controller/wafpolicy_controller.go`):
+A `WAFPolicy` is re-reconciled whenever any of the following changes. The
+first four rows are `WAFPolicyReconciler`'s watches (owns `Accepted`, and
+`Programmed` only while *not* Accepted); the last row is
+`ProcessorConfigReconciler`'s (owns `Programmed` once `Accepted=True`) - see
+`SetupWithManager` in `wafpolicy_controller.go` and
+`processor_config_reconciler.go` respectively.
+
+Every watch below is filtered by a predicate that skips **status-only**
+updates: neither reconciler's output ever depends on a watched object's
+status (only on specs, plus which objects exist), so a status-only change
+- most commonly the gateway implementation's routine `Gateway`/`HTTPRoute`
+status writes, or a reconciler's own status update triggering itself - is
+never relevant and would otherwise be pure waste at scale. `Create`/`Delete`
+events always pass through regardless, since those are what actually
+add/remove attachment points, siblings, and targets. For `WAFRuleSet`,
+`Gateway`, and `HTTPRoute` this is a plain
+`predicate.GenerationChangedPredicate` (spec changes bump `generation`,
+status changes don't); for `WAFPolicy` itself it's a custom predicate
+(`wafPolicyRelevantChangePredicate`) that also passes through an `Accepted`
+condition change, since that transition is status-only but is exactly what
+`ProcessorConfigReconciler` needs to react to.
 
 | Change                                          | Effect                                                                                                             |
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
@@ -215,6 +331,7 @@ watches registered in `SetupWithManager`
 | A sibling `WAFPolicy` targeting the same attachment point | Every policy sharing that attachment point is re-evaluated — e.g. deleting the winner of a conflict promotes the oldest remaining loser to `Accepted`. |
 | The targeted `Gateway`/`HTTPRoute`              | Every `WAFPolicy` targeting that object (any `sectionName`) is re-evaluated, e.g. a renamed/removed listener flips `Accepted` to `TargetNotFound`. |
 | A referenced `WAFRuleSet`                       | Every `WAFPolicy` whose `customRulesRefs` names it is re-evaluated.                                                 |
+| Any `WAFPolicy`, `WAFRuleSet`, `Gateway`, or `HTTPRoute` change | The entire processor config is rebuilt from every currently Accepted `WAFPolicy` and republished; `Programmed` is refreshed on all of them (see [Programming](#3-programming-implemented)). |
 
 ### Deletion
 
@@ -224,7 +341,12 @@ will need one, so the generated objects can be reliably GC'd rather than
 relying solely on owner references). Deleting a `WAFPolicy` that was the
 winner of a conflict causes its former loser(s) to be re-evaluated (see the
 table above) and, if still the oldest remaining policy for that attachment
-point, promoted to `Accepted=True`.
+point, promoted to `Accepted=True`. Deleting any `WAFPolicy` also
+re-triggers `ProcessorConfigReconciler` (it watches `WAFPolicy` events),
+which republishes the processor config without that policy's engine/routes
+- no separate cleanup step is needed since the config is rebuilt from
+scratch (every currently Accepted policy) on every reconcile, not patched
+incrementally.
 
 ## Status conditions reference
 
@@ -234,8 +356,9 @@ point, promoted to `Accepted=True`.
 | `Accepted`  | `False` | `TargetNotFound` | `spec.targetRef` doesn't resolve, or its `sectionName` doesn't match an existing listener/route rule. | Check the target `Gateway`/`HTTPRoute` name, namespace, and `sectionName` for typos, or that it exists yet. |
 | `Accepted`  | `False` | `Invalid`        | A `spec.customRulesRefs` entry doesn't resolve to an existing `WAFRuleSet` in the same namespace.  | Create the missing `WAFRuleSet`, or fix the reference.                                             |
 | `Accepted`  | `False` | `Conflicted`     | Another `WAFPolicy` (older by `creationTimestamp`) already targets the exact same attachment point. | Point one of the two policies at a different attachment point, or delete the redundant one.        |
-| `Programmed`| `False` | `Pending`        | The policy is not yet (or no longer) accepted, or engine compilation/data-plane wiring hasn't happened yet (always true today — see [Programming](#3-programming-planned)). | If `Accepted=True` and this persists, engine compilation/wiring is not implemented yet in this milestone; otherwise fix whatever `Accepted` reports. |
-| `Programmed`| `True`  | `Programmed`     | *(planned)* The engine is compiled and live in the data plane, and the route is wired to it.        | Nothing — fully live.                                                                               |
+| `Programmed`| `False` | `Pending`        | The policy is not (or no longer) `Accepted`; `ProcessorConfigReconciler` hasn't considered it.       | Fix whatever `Accepted` reports; `Programmed` follows automatically once it becomes `True`.        |
+| `Programmed`| `True`  | `Programmed`     | The engine compiled successfully and was published to the processor's config, regardless of whether it currently covers any route. | Nothing — live (modulo the processor's own reload latency; see `docs/processor.md`'s "Hot reload"). |
+| `Programmed`| `False` | `CompileFailed`  | The policy is `Accepted`, but its composed Coraza/SecLang directives (Core Rule Set + `paranoiaLevel`/`anomalyThreshold`/`exclusions` + referenced `WAFRuleSet.spec.rules`) failed to compile. Excluded from the published config; every route it would have covered is currently unprotected. | Read the compiler error in the condition message; it almost always points at a malformed custom `WAFRuleSet` directive. |
 
 ## Troubleshooting
 
@@ -248,4 +371,6 @@ without needing `-o yaml`.
 | `Accepted` never turns `True`                         | `TargetNotFound`, `Invalid`, or `Conflicted` — check `status.conditions[].message` | See the reference table above for the matching reason.                                     |
 | Two policies for the same route, only one is `Accepted` | Expected: conflict resolution picked the older one | Not a bug — remove the redundant policy or repoint it at a different attachment point.     |
 | A route-level policy isn't overriding the Gateway default | `targetRef` doesn't actually match the route (wrong `namespace`/`name`/`sectionName`), or it targets the Gateway again instead of the `HTTPRoute` | Verify `spec.targetRef.kind` is `HTTPRoute` and every field matches the intended route exactly. |
-| `Programmed` stays `False/Pending` even though `Accepted=True` | Expected in this milestone: engine compilation and processor config push are not implemented yet | Nothing to fix — this is current, expected behavior, not an error.                          |
+| `Programmed` stays `False/Pending` even though `Accepted=True` | `ProcessorConfigReconciler` hasn't run yet (should be within moments - it watches `WAFPolicy` changes) or is failing to publish (check its logs and RBAC on the processor's ConfigMap). | Check the controller's logs for `processor-config` reconcile errors.                       |
+| `Programmed=False/CompileFailed`                      | The policy's composed directives don't compile - almost always a malformed custom `SecRule` in a referenced `WAFRuleSet`. | Read the condition message (the Coraza compiler error) and fix the offending `WAFRuleSet.spec.rules[].directive`. |
+| The processor doesn't seem to be enforcing a policy that shows `Programmed=True` | The processor hasn't picked up the new ConfigMap yet (kubelet sync + inotify reload latency, typically well under a second - see `docs/processor.md`'s "Hot reload"), or nothing routes traffic through it yet (Gateway wiring - see [§4](#4-gateway-wiring-planned) - isn't implemented). | Check the processor's logs for a "Reloaded processor config" line; confirm `AgentgatewayPolicy` generation isn't the missing piece. |

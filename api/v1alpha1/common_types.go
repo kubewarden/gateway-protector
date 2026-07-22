@@ -47,15 +47,12 @@ type PolicyTargetReference struct {
 // LocalRuleSetReference references a WAFRuleSet living in the same namespace
 // as the WAFPolicy that references it (see WAFPolicySpec.CustomRulesRefs).
 type LocalRuleSetReference struct {
-	// kind is the kind of the referenced object. Currently only "WAFRuleSet"
-	// is supported.
+	// name is the name of the referenced WAFRuleSet, in the same namespace
+	// as the WAFPolicy referencing it.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=WAFRuleSet
-	Kind string `json:"kind"`
-
-	// name is the name of the referenced WAFRuleSet.
-	// +kubebuilder:validation:Required
-	Name gatewayv1.ObjectName `json:"name"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
 }
 
 // Status condition types shared by WAFPolicy/DLPPolicy, following the
@@ -112,4 +109,12 @@ const (
 	// the controller has not finished wiring the gateway / pushing the engine
 	// to the data plane yet.
 	ConditionReasonPending = "Pending"
+
+	// ConditionReasonCompileFailed is used with ConditionTypeProgrammed=False
+	// when the policy is Accepted but its composed Coraza/SecLang directives
+	// (embedded Core Rule Set + paranoiaLevel + anomalyThreshold +
+	// exclusions + referenced WAFRuleSet.spec.rules) failed to compile, so
+	// the policy could not be included in the processor's data-plane
+	// config. The condition message carries the compiler error.
+	ConditionReasonCompileFailed = "CompileFailed"
 )

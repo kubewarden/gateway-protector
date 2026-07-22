@@ -60,17 +60,33 @@ spec:
                     directive:
                       description: directive is one or more raw SecRule lines composing
                         this rule.
+                      minLength: 1
                       type: string
                     id:
                       description: |-
-                        id is the numeric SecRule id. It is the author's responsibility to keep
-                        ids unique within a WAFRuleSet and outside of the ranges reserved by
-                        the Core Rule Set and other WAFRuleSet objects referenced by the same
-                        WAFPolicy; the admission webhook's dry-compile step (see TODO in
-                        internal/webhook/v1alpha1/wafpolicy_webhook.go) additionally enforces
-                        whatever uniqueness rules Coraza itself requires.
+                        id is the numeric SecRule id. It must be in the site-local range
+                        1-99999, which is the SecLang convention reserved for a site's own
+                        custom rules (as opposed to 100000-899999, historically assigned to
+                        various commercial/community rule vendors; 900000-999999, the OWASP
+                        Core Rule Set itself; 9500000-9599999, registered CRS plugins; and
+                        10000000-10000099, reserved by gateway-protector for its own
+                        generated directives). It is
+                        the author's responsibility to keep ids unique within a WAFRuleSet
+                        and across every other WAFRuleSet referenced by the same WAFPolicy.
+
+                        This validates the declared id field only, not any id that might
+                        also appear inside the raw directive text below - a mismatch between
+                        the two is still only caught at dry-compile time.
                       format: int64
                       type: integer
+                      x-kubernetes-validations:
+                      - message: rule id must be a positive integer
+                        rule: self >= 1
+                      - message: ids above 99999 are reserved (100000-899999 historical
+                          vendor assignments, 900000-999999 OWASP Core Rule Set, 9500000-9599999
+                          CRS plugins, 10000000-10000099 gateway-protector); custom
+                          rules must use the site-local range 1-99999
+                        rule: self <= 99999
                   required:
                   - directive
                   - id

@@ -82,29 +82,31 @@ spec:
                 description: |-
                   customRulesRefs references WAFRuleSet objects, in the same namespace as
                   this WAFPolicy, whose custom SecRule directives are compiled into the
-                  engine alongside the Core Rule Set.
+                  engine alongside the Core Rule Set. Referenced WAFRuleSets are
+                  rendered in namespace/name order, not the order listed here (this is
+                  a listType=map, so list order isn't meaningful and isn't preserved
+                  across a server-side-apply merge); SecLang rules that depend on a
+                  specific relative order must be placed together within a single
+                  WAFRuleSet, whose own spec.rules order is preserved.
                 items:
                   description: |-
                     LocalRuleSetReference references a WAFRuleSet living in the same namespace
                     as the WAFPolicy that references it (see WAFPolicySpec.CustomRulesRefs).
                   properties:
-                    kind:
-                      description: |-
-                        kind is the kind of the referenced object. Currently only "WAFRuleSet"
-                        is supported.
-                      enum:
-                      - WAFRuleSet
-                      type: string
                     name:
-                      description: name is the name of the referenced WAFRuleSet.
+                      description: |-
+                        name is the name of the referenced WAFRuleSet, in the same namespace
+                        as the WAFPolicy referencing it.
                       maxLength: 253
                       minLength: 1
                       type: string
                   required:
-                  - kind
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               engine:
                 description: engine configures the WAF engine's mode and failure posture.
                 properties:

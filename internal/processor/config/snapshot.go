@@ -16,29 +16,84 @@ import (
 // handling (see internal/processor/server.go).
 type Snapshot struct {
 	engines map[string]coraza.WAF
-	// routes is sorted by descending PathPrefix length so the first match
-	// for a given host is always the longest (most specific) one.
-	routes []Route
+	// exact maps an exact Host value to its routes, each sorted by
+	// descending PathPrefix length so the first match is always the
+	// longest (most specific) one.
+	exact map[string][]Route
+	// wildcard holds every route whose Host is a "*.<suffix>" pattern,
+	// sorted by descending suffix length (more specific subdomain first),
+	// then by descending PathPrefix length.
+	wildcard []Route
+	// catchAll holds every route whose Host is exactly "*", sorted by
+	// descending PathPrefix length.
+	catchAll []Route
 }
 
 // newSnapshot builds a Snapshot from compiled engines and the routes that
-// reference them. Routes are copied and sorted so Match can do a simple
-// first-match-wins scan.
+// reference them. Routes are partitioned by host-matching strategy (see
+// Match) and sorted so each lookup is a simple first-match-wins scan.
 func newSnapshot(engines map[string]coraza.WAF, routes []Route) *Snapshot {
+	exact := make(map[string][]Route)
+
+	var wildcard, catchAll []Route
+
+	for _, route := range routes {
+		switch {
+		case route.Host == "*":
+			catchAll = append(catchAll, route)
+		case strings.HasPrefix(route.Host, "*."):
+			wildcard = append(wildcard, route)
+		default:
+			exact[route.Host] = append(exact[route.Host], route)
+		}
+	}
+
+	for host, hostRoutes := range exact {
+		exact[host] = sortByPathPrefixDesc(hostRoutes)
+	}
+
+	sort.SliceStable(wildcard, func(i, j int) bool {
+		if len(wildcard[i].Host) != len(wildcard[j].Host) {
+			return len(wildcard[i].Host) > len(wildcard[j].Host)
+		}
+
+		return len(wildcard[i].PathPrefix) > len(wildcard[j].PathPrefix)
+	})
+
+	return &Snapshot{
+		engines:  engines,
+		exact:    exact,
+		wildcard: wildcard,
+		catchAll: sortByPathPrefixDesc(catchAll),
+	}
+}
+
+func sortByPathPrefixDesc(routes []Route) []Route {
 	sorted := make([]Route, len(routes))
 	copy(sorted, routes)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		return len(sorted[i].PathPrefix) > len(sorted[j].PathPrefix)
 	})
 
-	return &Snapshot{engines: engines, routes: sorted}
+	return sorted
 }
 
 // Match resolves the WAF engine that protects the given host+path, following
 // this host lookup order (see docs/processor.md for the full rationale):
-// exact :authority match, then the same host with any ":port" suffix
-// stripped. Among routes for the matched host, the longest matching
-// pathPrefix wins.
+//
+//  1. an exact :authority match
+//  2. the same host with any ":port" suffix stripped, still matched
+//     exactly
+//  3. a wildcard host route ("*.<suffix>") against the host, then again
+//     against the port-stripped host - the most specific (longest)
+//     matching suffix winning over broader ones
+//  4. a catch-all host route ("*")
+//
+// Within whichever of the above matches, the longest matching pathPrefix
+// wins. Every exact-host attempt (with and without port) is exhausted
+// before any wildcard is considered, and every wildcard attempt before the
+// catch-all, so a specific host is never shadowed by a broader rule just
+// because of a port suffix.
 //
 // It returns (nil, false) when no route matches (the caller should treat the
 // request as unprotected/CONTINUE), and (nil, true) when a route matches but
@@ -56,29 +111,51 @@ func (s *Snapshot) Match(host, path string) (coraza.WAF, bool) {
 	return s.engines[route.WAF.EngineKey], true
 }
 
-func (s *Snapshot) matchRoute(host, path string) (Route, bool) {
-	if route, routeFound := s.matchRouteForHost(host, path); routeFound {
-		return route, true
+// hostCandidates returns host, then (if different) host with any trailing
+// ":port" stripped.
+func hostCandidates(host string) []string {
+	candidates := []string{host}
+	if stripped := stripPort(host); stripped != host {
+		candidates = append(candidates, stripped)
 	}
 
-	if strippedHost := stripPort(host); strippedHost != host {
-		if route, routeFound := s.matchRouteForHost(strippedHost, path); routeFound {
-			return route, true
-		}
-	}
-
-	return Route{}, false
+	return candidates
 }
 
-func (s *Snapshot) matchRouteForHost(host, path string) (Route, bool) {
-	for _, route := range s.routes {
-		if route.Host != host {
-			continue
+func (s *Snapshot) matchRoute(host, path string) (Route, bool) {
+	candidates := hostCandidates(host)
+
+	for _, h := range candidates {
+		for _, route := range s.exact[h] {
+			if strings.HasPrefix(path, route.PathPrefix) {
+				return route, true
+			}
 		}
+	}
+
+	for _, h := range candidates {
+		for _, route := range s.wildcard {
+			// "*.<suffix>" matches a strict subdomain of suffix (e.g.
+			// "*.example.com" matches "shop.example.com" but not
+			// "example.com" itself), mirroring Gateway API hostname
+			// matching.
+			suffix := route.Host[1:]
+			if !strings.HasSuffix(h, suffix) || len(h) == len(suffix) {
+				continue
+			}
+
+			if strings.HasPrefix(path, route.PathPrefix) {
+				return route, true
+			}
+		}
+	}
+
+	for _, route := range s.catchAll {
 		if strings.HasPrefix(path, route.PathPrefix) {
 			return route, true
 		}
 	}
+
 	return Route{}, false
 }
 
@@ -91,5 +168,6 @@ func stripPort(host string) string {
 	if idx == -1 || idx < bracket {
 		return host
 	}
+
 	return host[:idx]
 }

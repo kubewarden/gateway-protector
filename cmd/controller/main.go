@@ -18,6 +18,7 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
 	"os"
 
@@ -53,6 +54,21 @@ func init() {
 
 	utilruntime.Must(gwpv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
+}
+
+// podNamespace resolves the namespace this controller itself is running
+// in - where ProcessorConfigMapName is published, alongside the processor
+// Deployment that mounts it - from the POD_NAMESPACE downward-API env var
+// the chart sets on the controller Deployment.
+func podNamespace() (string, error) {
+	ns := os.Getenv("POD_NAMESPACE")
+	if ns == "" {
+		return "", errors.New("POD_NAMESPACE environment variable is not set or empty; it is required " +
+			"to determine where to publish the processor config ConfigMap (set via the downward API " +
+			"by the Helm chart)")
+	}
+
+	return ns, nil
 }
 
 func main() {
@@ -186,6 +202,24 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "wafpolicy")
+		os.Exit(1)
+	}
+
+	namespace, err := podNamespace()
+	if err != nil {
+		setupLog.Error(err, "Failed to determine the controller's namespace")
+		os.Exit(1)
+	}
+
+	if err := (&controller.ProcessorConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Publisher: &controller.ConfigMapPublisher{
+			Client:    mgr.GetClient(),
+			Namespace: namespace,
+		},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "processor-config")
 		os.Exit(1)
 	}
 

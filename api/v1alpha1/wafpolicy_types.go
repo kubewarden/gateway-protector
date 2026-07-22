@@ -140,8 +140,15 @@ type WAFPolicySpec struct {
 
 	// customRulesRefs references WAFRuleSet objects, in the same namespace as
 	// this WAFPolicy, whose custom SecRule directives are compiled into the
-	// engine alongside the Core Rule Set.
+	// engine alongside the Core Rule Set. Referenced WAFRuleSets are
+	// rendered in namespace/name order, not the order listed here (this is
+	// a listType=map, so list order isn't meaningful and isn't preserved
+	// across a server-side-apply merge); SecLang rules that depend on a
+	// specific relative order must be placed together within a single
+	// WAFRuleSet, whose own spec.rules order is preserved.
 	// +optional
+	// +listType=map
+	// +listMapKey=name
 	CustomRulesRefs []LocalRuleSetReference `json:"customRulesRefs,omitempty"`
 }
 

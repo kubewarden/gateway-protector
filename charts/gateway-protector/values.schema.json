@@ -63,22 +63,6 @@
         "processor": {
             "type": "object",
             "properties": {
-                "config": {
-                    "type": "object",
-                    "properties": {
-                        "directives": {
-                            "type": "object",
-                            "properties": {
-                                "default": {
-                                    "type": "string"
-                                }
-                            }
-                        },
-                        "routes": {
-                            "type": "array"
-                        }
-                    }
-                },
                 "image": {
                     "type": "object",
                     "properties": {

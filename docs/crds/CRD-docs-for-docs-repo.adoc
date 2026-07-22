@@ -57,11 +57,10 @@ as the WAFPolicy that references it (see WAFPolicySpec.CustomRulesRefs).
 [cols="20a,50a,15a,15a", options="header"]
 |===
 | Field | Description | Default | Validation
-| *`kind`* __string__ | kind is the kind of the referenced object. Currently only "WAFRuleSet" +
-is supported. + |  | Enum: [WAFRuleSet] +
+| *`name`* __string__ | name is the name of the referenced WAFRuleSet, in the same namespace +
+as the WAFPolicy referencing it. + |  | MaxLength: 253 +
+MinLength: 1 +
 Required: \{} +
-
-| *`name`* __xref:{anchor_prefix}-sigs-k8s-io-gateway-api-apis-v1-objectname[$$ObjectName$$]__ | name is the name of the referenced WAFRuleSet. + |  | Required: \{} +
 
 |===
 
@@ -182,14 +181,22 @@ identified by its numeric rule id.
 [cols="20a,50a,15a,15a", options="header"]
 |===
 | Field | Description | Default | Validation
-| *`id`* __integer__ | id is the numeric SecRule id. It is the author's responsibility to keep +
-ids unique within a WAFRuleSet and outside of the ranges reserved by +
-the Core Rule Set and other WAFRuleSet objects referenced by the same +
-WAFPolicy; the admission webhook's dry-compile step (see TODO in +
-internal/webhook/v1alpha1/wafpolicy_webhook.go) additionally enforces +
-whatever uniqueness rules Coraza itself requires. + |  | Required: \{} +
+| *`id`* __integer__ | id is the numeric SecRule id. It must be in the site-local range +
+1-99999, which is the SecLang convention reserved for a site's own +
+custom rules (as opposed to 100000-899999, historically assigned to +
+various commercial/community rule vendors; 900000-999999, the OWASP +
+Core Rule Set itself; 9500000-9599999, registered CRS plugins; and +
+10000000-10000099, reserved by gateway-protector for its own +
+generated directives). It is +
+the author's responsibility to keep ids unique within a WAFRuleSet +
+and across every other WAFRuleSet referenced by the same WAFPolicy. +
 
-| *`directive`* __string__ | directive is one or more raw SecRule lines composing this rule. + |  | Required: \{} +
+This validates the declared id field only, not any id that might +
+also appear inside the raw directive text below - a mismatch between +
+the two is still only caught at dry-compile time. + |  | Required: \{} +
+
+| *`directive`* __string__ | directive is one or more raw SecRule lines composing this rule. + |  | MinLength: 1 +
+Required: \{} +
 
 |===
 
@@ -372,7 +379,12 @@ known false positive without lowering the paranoia level. + |  | Optional: \{} +
 
 | *`customRulesRefs`* __xref:{anchor_prefix}-github-com-kubewarden-gateway-protector-api-v1alpha1-localrulesetreference[$$LocalRuleSetReference$$] array__ | customRulesRefs references WAFRuleSet objects, in the same namespace as +
 this WAFPolicy, whose custom SecRule directives are compiled into the +
-engine alongside the Core Rule Set. + |  | Optional: \{} +
+engine alongside the Core Rule Set. Referenced WAFRuleSets are +
+rendered in namespace/name order, not the order listed here (this is +
+a listType=map, so list order isn't meaningful and isn't preserved +
+across a server-side-apply merge); SecLang rules that depend on a +
+specific relative order must be placed together within a single +
+WAFRuleSet, whose own spec.rules order is preserved. + |  | Optional: \{} +
 
 |===
 

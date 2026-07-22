@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,11 +25,18 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	gwpv1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
+	procconfig "github.com/kubewarden/gateway-protector/internal/processor/config"
 	// +kubebuilder:scaffold:imports
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
+
+// processorConfigMapNamespace is the namespace ProcessorConfigReconciler's
+// ConfigMapPublisher is configured with for this test suite (standing in
+// for the controller's own namespace, resolved from POD_NAMESPACE in
+// production - see cmd/controller/main.go's podNamespace).
+const processorConfigMapNamespace = "default"
 
 var (
 	cancel    context.CancelFunc
@@ -36,7 +44,46 @@ var (
 	cfg       *rest.Config
 	k8sClient client.Client
 	mgr       manager.Manager
+
+	// publishedConfigs records every processor config
+	// ProcessorConfigReconciler publishes during this test suite (see
+	// recordingPublisher), so specs can assert on what was published
+	// without coupling to how (ConfigMap today, possibly a future gRPC
+	// stream) - see processor_config_reconciler_test.go's
+	// publishedConfig.
+	publishedConfigs *recordingPublisher
 )
+
+// recordingPublisher decorates a real ConfigPublisher, remembering the
+// most recently published config alongside actually publishing it through
+// delegate. This lets envtest specs assert on what the reconciler decided
+// to publish (routes, engine keys, directives) independently of the
+// transport, while still exercising and covering the real publisher (see
+// processor_config_reconciler_test.go for the one spec that does assert on
+// the ConfigMap transport itself).
+type recordingPublisher struct {
+	delegate ConfigPublisher
+
+	mu   sync.Mutex
+	last *procconfig.Config
+}
+
+func (p *recordingPublisher) Publish(ctx context.Context, cfg *procconfig.Config) error {
+	p.mu.Lock()
+	p.last = cfg
+	p.mu.Unlock()
+
+	return p.delegate.Publish(ctx, cfg)
+}
+
+// lastConfig returns the most recently published config, or nil if none
+// has been published yet.
+func (p *recordingPublisher) lastConfig() *procconfig.Config {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.last
+}
 
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -92,6 +139,20 @@ var _ = BeforeSuite(func() {
 	err = (&WAFPolicyReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	publishedConfigs = &recordingPublisher{
+		delegate: &ConfigMapPublisher{
+			Client:    mgr.GetClient(),
+			Namespace: processorConfigMapNamespace,
+		},
+	}
+
+	err = (&ProcessorConfigReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Publisher: publishedConfigs,
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 

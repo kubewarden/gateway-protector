@@ -112,7 +112,7 @@ func resolveHTTPRouteTarget(ctx context.Context, c client.Client, ref gwpv1alpha
 func resolveCustomRulesRefs(ctx context.Context, c client.Client, policy *gwpv1alpha1.WAFPolicy) error {
 	for _, ruleSetRef := range policy.Spec.CustomRulesRefs {
 		ruleSet := &gwpv1alpha1.WAFRuleSet{}
-		key := types.NamespacedName{Namespace: policy.Namespace, Name: string(ruleSetRef.Name)}
+		key := types.NamespacedName{Namespace: policy.Namespace, Name: ruleSetRef.Name}
 		if err := c.Get(ctx, key, ruleSet); err != nil {
 			if apierrors.IsNotFound(err) {
 				return &targetNotFoundError{

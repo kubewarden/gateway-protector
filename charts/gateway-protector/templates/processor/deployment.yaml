@@ -58,7 +58,12 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: {{ include "gateway-protector.fullname" . }}-processor-config
+            # Hardcoded to match controller.ProcessorConfigMapName
+            # (internal/controller/processor_config_publisher.go): the
+            # controller - not this chart - owns this ConfigMap's content,
+            # generating it from WAFPolicy/WAFRuleSet objects, so its name
+            # is not templated off the release name.
+            name: gateway-protector-processor-config
         - name: tmp
           emptyDir: {}
       terminationGracePeriodSeconds: 10

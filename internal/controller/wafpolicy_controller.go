@@ -10,9 +10,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -37,12 +39,12 @@ type WAFPolicyReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
-// This is milestone 1 of the WAFPolicy reconciler: it resolves the
-// Accepted condition only (conflict detection, targetRef resolution,
-// customRulesRefs resolution). It deliberately stops short of compiling the
-// Coraza engine, pushing the processor's data-plane config, and generating
-// AgentgatewayPolicy objects - those land in later milestones, so
-// Programmed never leaves False/Pending here yet. Specifically:
+// This resolves the Accepted condition only (conflict detection, targetRef
+// resolution, customRulesRefs resolution); Programmed is owned by
+// ProcessorConfigReconciler (see processor_config_reconciler.go) from the
+// moment a policy becomes Accepted onward - this reconciler only ever sets
+// Programmed=False/Pending while a policy is *not* Accepted, and otherwise
+// leaves it untouched. Specifically:
 //
 //   - conflict detection: if another WAFPolicy targets the very same
 //     attachment point (same Gateway, or same HTTPRoute + optional
@@ -57,7 +59,9 @@ type WAFPolicyReconciler struct {
 //     Accepted=False/TargetNotFound when it doesn't resolve
 //   - customRulesRefs resolution: every referenced WAFRuleSet must exist in
 //     the same namespace; Accepted=False/Invalid when one doesn't
-//   - once all of the above succeed, Accepted=True/Accepted
+//   - once all of the above succeed, Accepted=True/Accepted; Programmed is
+//     left as-is (ProcessorConfigReconciler, watching WAFPolicy changes
+//     itself, sets it shortly after)
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/reconcile
@@ -112,12 +116,14 @@ func (r *WAFPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.updateStatusIfChanged(ctx, policy, acceptedChanged || programmedChanged)
 	}
 
-	acceptedChanged := setAccepted(policy, metav1.ConditionTrue, gwpv1alpha1.ConditionReasonAccepted,
+	// Programmed is deliberately left untouched here: ProcessorConfigReconciler
+	// owns it from this point on (see its doc comment), and also watches
+	// WAFPolicy changes, so it will set the right value shortly after this
+	// Accepted transition lands.
+	changed := setAccepted(policy, metav1.ConditionTrue, gwpv1alpha1.ConditionReasonAccepted,
 		"targetRef resolved and no conflicting WAFPolicy targets the same attachment point")
-	programmedChanged := setProgrammed(policy, metav1.ConditionFalse, gwpv1alpha1.ConditionReasonPending,
-		"engine compilation and processor config push are not implemented yet")
 
-	return r.updateStatusIfChanged(ctx, policy, acceptedChanged || programmedChanged)
+	return r.updateStatusIfChanged(ctx, policy, changed)
 }
 
 // updateStatusIfChanged persists policy.Status when changed is true.
@@ -235,13 +241,25 @@ func (r *WAFPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	}
 
+	// GenerationChangedPredicate filters out status-only updates on every
+	// watch below: this reconciler's output (Accepted) is a pure function
+	// of specs plus which objects exist, never of any watched object's
+	// status - so a status-only update (e.g. the gateway implementation's
+	// constant HTTPRoute status churn, a sibling WAFPolicy's Accepted flip,
+	// or this reconciler's own Accepted/Programmed writes triggering
+	// themselves) is never relevant here, only wasteful. Create/Delete
+	// events always pass through regardless (see
+	// predicate.GenerationChangedPredicate's doc comment): those are what
+	// actually add/remove attachment points, siblings, and targets.
+	changedGeneration := builder.WithPredicates(predicate.GenerationChangedPredicate{})
+
 	err := ctrl.NewControllerManagedBy(mgr).
-		For(&gwpv1alpha1.WAFPolicy{}).
+		For(&gwpv1alpha1.WAFPolicy{}, changedGeneration).
 		Named("wafpolicy").
-		Watches(&gwpv1alpha1.WAFPolicy{}, handler.EnqueueRequestsFromMapFunc(r.mapSiblingPolicies)).
-		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.mapPoliciesTargetingObject("Gateway"))).
-		Watches(&gatewayv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(r.mapPoliciesTargetingObject("HTTPRoute"))).
-		Watches(&gwpv1alpha1.WAFRuleSet{}, handler.EnqueueRequestsFromMapFunc(r.mapPoliciesReferencingRuleSet)).
+		Watches(&gwpv1alpha1.WAFPolicy{}, handler.EnqueueRequestsFromMapFunc(r.mapSiblingPolicies), changedGeneration).
+		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.mapPoliciesTargetingObject("Gateway")), changedGeneration).
+		Watches(&gatewayv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(r.mapPoliciesTargetingObject("HTTPRoute")), changedGeneration).
+		Watches(&gwpv1alpha1.WAFRuleSet{}, handler.EnqueueRequestsFromMapFunc(r.mapPoliciesReferencingRuleSet), changedGeneration).
 		Complete(r)
 	if err != nil {
 		return fmt.Errorf("failed to create WAFPolicy controller: %w", err)

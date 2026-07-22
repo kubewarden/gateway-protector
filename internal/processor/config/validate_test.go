@@ -74,6 +74,44 @@ func TestValidate(t *testing.T) {
 				Routes:     []Route{{Host: "example.com", PathPrefix: "/"}},
 			},
 		},
+		{
+			name: "wildcard host is allowed",
+			cfg: Config{
+				Directives: map[string]string{"a": "SecRuleEngine On"},
+				Routes:     []Route{{Host: "*.example.com", PathPrefix: "/"}},
+			},
+		},
+		{
+			name: "catch-all host is allowed",
+			cfg: Config{
+				Directives: map[string]string{"a": "SecRuleEngine On"},
+				Routes:     []Route{{Host: "*", PathPrefix: "/"}},
+			},
+		},
+		{
+			name: "wildcard host with empty suffix is rejected",
+			cfg: Config{
+				Directives: map[string]string{"a": "SecRuleEngine On"},
+				Routes:     []Route{{Host: "*.", PathPrefix: "/"}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "wildcard host with a second wildcard label is rejected",
+			cfg: Config{
+				Directives: map[string]string{"a": "SecRuleEngine On"},
+				Routes:     []Route{{Host: "*.foo.*.com", PathPrefix: "/"}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "wildcard not anchored at the start is rejected",
+			cfg: Config{
+				Directives: map[string]string{"a": "SecRuleEngine On"},
+				Routes:     []Route{{Host: "foo*.example.com", PathPrefix: "/"}},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
