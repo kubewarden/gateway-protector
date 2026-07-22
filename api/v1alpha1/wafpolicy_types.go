@@ -97,8 +97,7 @@ type WAFExclusion struct {
 // "most-specific-wins" between exactly those two attachment levels, with no
 // merging: a Route-level WAFPolicy fully replaces the Gateway-level one for
 // that route, it doesn't add to it. See the field docs below for the
-// per-field reference, WAFPolicyCustomValidator's doc comments
-// (internal/webhook/v1alpha1/wafpolicy_webhook.go) for the validation and
+// per-field reference, docs/wafpolicy-lifecycle.md for the validation and
 // conflict-resolution rules, and docs/processor.md for how the compiled
 // result is ultimately consumed by the data plane.
 type WAFPolicySpec struct {

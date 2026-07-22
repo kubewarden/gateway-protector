@@ -58,7 +58,7 @@ behind this summary.
         ▼                                                  ▼
  ┌──────────────┐   ┌───────────────┐   ┌──────────────┐  garbage-
  │  Admission   │──►│  Acceptance   │──►│  Programming │  collected
- │  (webhook)   │   │ (implemented) │   │(implemented) │  (no finalizer)
+ │ (CRD schema) │   │ (implemented) │   │(implemented) │  (no finalizer)
  └──────────────┘   └───────┬───────┘   └──────┬───────┘
                             │                  │
                      Accepted condition   Programmed condition
@@ -74,75 +74,73 @@ behind this summary.
 
 ### 1. Admission
 
-The `WAFPolicy` admission webhook (`internal/webhook/v1alpha1/wafpolicy_webhook.go`)
-is registered and reachable, but **today it accepts every object unchanged** —
-neither the defaulter nor the validator perform any real logic yet. Planned
-validation (not yet implemented):
+Admission-time validation is performed entirely by the **API server**, from
+the OpenAPI schema and CEL validation rules baked into the CRDs (see
+`api/v1alpha1/*_types.go` and the generated CRDs in
+`charts/gateway-protector/templates/crd/`) - there is deliberately **no
+admission webhook**. Everything knowable from the object alone is rejected at
+`apply` time this way: field types and enums, required fields,
+`WAFCustomRule.id`'s permitted 1-99999 range (with per-violation error
+messages), non-empty `directive`/`rules`, and duplicate `customRulesRefs`
+entries (a `listType=map` keyed by name).
 
-- Dry-compiling the composed Coraza directives (embedded Core Rule Set +
-  `paranoiaLevel` + `anomalyThreshold` + `exclusions` + referenced
-  `WAFRuleSet.spec.rules`), so an invalid configuration fails the `apply`
-  itself with the compile error, instead of being stored and only surfacing
-  later as a status condition. This dry-compile step already exists - see
-  `internal/controller/processorconfig.CorazaDryCompile` - but today only
-  runs during [Programming](#3-programming-implemented), after the object
-  is already stored (surfacing as `Programmed=False/CompileFailed`); moving
-  it into the webhook remains a planned improvement for faster feedback.
-- Rejecting a duplicate `targetRef` (another `WAFPolicy` already targeting the
-  exact same attachment point) as an admission-time `Conflicted` rejection,
-  rather than only a status condition after the fact.
+There is no webhook by design, not by omission:
 
-Deliberately **not** planned for the webhook: verifying that
-`spec.customRulesRefs` resolves to an existing `WAFRuleSet`. See
-[Why the reconciler validates again](#why-the-reconciler-validates-again)
-below for why that check belongs to the reconciler instead.
+- Every object-local rule the project needs so far is expressible as
+  schema/CEL validation, which the API server enforces with zero extra
+  infrastructure - no TLS certificates (and thus no cert-manager
+  dependency), no availability coupling between the controller and every
+  `WAFPolicy` write, and no way to be bypassed or mis-ordered.
+- The checks a webhook *could* add beyond that are all better served
+  elsewhere (see
+  [Why validation is split between admission and the reconciler](#why-validation-is-split-between-admission-and-the-reconciler)
+  below): cross-object checks belong to the reconciler, and dry-compiling
+  directives at admission could only ever be best-effort (the referenced
+  `WAFRuleSet`s may not exist yet, and may change later anyway).
 
-Until admission validation lands, invalid configuration and attachment-point
-conflicts are only caught by the reconciler, one step later — see
+Everything not expressible as schema validation - target resolution,
+`customRulesRefs` existence, conflicts, directive compilation - is caught by
+the reconcilers, one step later, and surfaced as `status.conditions` — see
 [Acceptance](#2-acceptance-implemented).
 
-### Why the reconciler validates again
+### Why validation is split between admission and the reconciler
 
-It may look redundant that the reconciler re-checks things (target
-resolution, `customRulesRefs`, conflicts) that the admission webhook is also
-meant to validate. The overlap is deliberate — the two layers answer
-different questions and neither can replace the other:
+It may look tempting to push more validation into admission (e.g. via a
+webhook). The split is deliberate — the two layers answer different
+questions and the reconciler cannot be replaced:
 
-- **Admission is point-in-time; acceptance must hold continuously.** A
-  webhook only fires when the `WAFPolicy` itself is created or updated. But a
-  previously-accepted policy can stop being valid because something *else*
+- **Admission is point-in-time; acceptance must hold continuously.**
+  Admission only fires when the `WAFPolicy` itself is created or updated. But
+  a previously-accepted policy can stop being valid because something *else*
   changed: its target `Gateway`/`HTTPRoute` is deleted or its listener/rule is
   renamed, a referenced `WAFRuleSet` is deleted, or the winner of a conflict
   is removed and a loser needs to be promoted. None of that produces an
   admission event on the `WAFPolicy`. Only the reconciler's watches (see
   [Re-evaluation triggers](#re-evaluation-triggers)) keep `Accepted` truthful
   over time.
-- **Conflict detection in a webhook is inherently racy.** Two `WAFPolicy`
+- **Conflict detection at admission is inherently racy.** Two `WAFPolicy`
   objects applied at nearly the same time (e.g. a GitOps sync applying both)
   can each pass admission because neither request sees the other yet —
-  admission is not transactional across objects, and the webhook's view of
-  the cluster can be momentarily stale. The reconciler's
-  `creationTimestamp`-based tiebreak is the actual, race-free arbiter; the
-  webhook's duplicate-`targetRef` rejection is only a fast-feedback
-  best-effort layer on top of it.
-- **Cross-object reference checks don't belong in admission.** If the webhook
+  admission is not transactional across objects. The reconciler's
+  `creationTimestamp`-based tiebreak is the actual, race-free arbiter, and
+  per Gateway API policy conventions a conflict is a status condition
+  (`Accepted=False/Conflicted`), not a write rejection.
+- **Cross-object reference checks don't belong in admission.** If admission
   hard-rejected a `WAFPolicy` whose `WAFRuleSet` doesn't exist yet, applying a
   directory of manifests (`kubectl apply -f dir/`) would succeed or fail
   depending on file ordering, even though both objects are being applied
-  together. This is why `customRulesRefs` existence is intentionally left out
-  of the webhook's planned checks and is instead the reconciler's job
+  together. This is why `customRulesRefs` existence is the reconciler's job
   (`Accepted=False/Invalid`, re-evaluated once the `WAFRuleSet` shows up).
-- **Webhooks can be bypassed or absent.** Objects created before the webhook
-  was installed, a webhook outage combined with a lenient failure policy, or
-  a restore from backup can all leave invalid or conflicting objects in etcd
-  without ever going through admission. The reconciler cannot assume
-  everything it reads has been validated.
+- **Objects can enter etcd without passing today's admission rules.** Objects
+  created before a validation rule was added, or restored from backup, never
+  went through the current checks. The reconciler cannot assume everything it
+  reads has been validated.
 
-In short: the webhook exists for **fast feedback** at `apply` time on what is
-knowable from the object alone (directive compilation, a best-effort
-conflict check); the reconciler is the **continuous source of truth** for
-everything that can only be known by looking at the rest of the cluster, and
-is what actually drives the `status.conditions` operators rely on.
+In short: the API server's schema validation gives **fast feedback** at
+`apply` time on what is knowable from the object alone; the reconciler is
+the **continuous source of truth** for everything that can only be known by
+looking at the rest of the cluster, and is what actually drives the
+`status.conditions` operators rely on.
 
 ### 2. Acceptance (implemented)
 

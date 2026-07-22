@@ -83,11 +83,9 @@ generate-controller: manifests  ## Generate code containing DeepCopy, DeepCopyIn
 	$(GO_BUILD_ENV) $(CONTROLLER_GEN) object paths="./api/v1alpha1"
 
 .PHONY: manifests
-manifests: ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects. We use sed to inject labels/annotations that controller-gen markers can't express (see role.yaml/webhooks.yaml); everything else (names, service target) comes from roleName=/serviceName=/serviceNamespace=/webhookconfiguration markers in the Go source.
-	$(GO_BUILD_ENV) $(CONTROLLER_GEN) rbac:roleName=unused crd webhook paths="./api/v1alpha1" paths="./internal/controller" paths="./internal/webhook/..." output:crd:artifacts:config=charts/gateway-protector/templates/crd output:rbac:artifacts:config=charts/gateway-protector/templates/controller output:webhook:artifacts:config=charts/gateway-protector/templates/controller
+manifests: ## Generate ClusterRole and CustomResourceDefinition objects. We use sed to inject labels that controller-gen markers can't express (see role.yaml); everything else (names) comes from the roleName= marker in the Go source.
+	$(GO_BUILD_ENV) $(CONTROLLER_GEN) rbac:roleName=unused crd paths="./api/v1alpha1" paths="./internal/controller" output:crd:artifacts:config=charts/gateway-protector/templates/crd output:rbac:artifacts:config=charts/gateway-protector/templates/controller
 	sed -i '/metadata:/a\  labels:\n    {{ include "gateway-protector.labels" . | nindent 4 }}\n    app.kubernetes.io/component: controller' charts/gateway-protector/templates/controller/role.yaml
-	sed -i '/^metadata:/a\  annotations:\n    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gateway-protector.fullname" . }}-controller-webhook-tls\n  labels:\n    {{ include "gateway-protector.labels" . | nindent 4 }}\n    app.kubernetes.io/component: controller' charts/gateway-protector/templates/controller/manifests.yaml
-	mv charts/gateway-protector/templates/controller/manifests.yaml charts/gateway-protector/templates/controller/webhooks.yaml
 
 .PHONY: generate-chart
 generate-chart: ## Generate Helm chart values schema.

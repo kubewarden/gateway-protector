@@ -12,8 +12,9 @@ to build.
 Everything here is implemented by
 `internal/controller/processorconfig/table.go`, called from
 `processorconfig.Build` while [Programming](wafpolicy-lifecycle.md#3-programming-implemented)
-runs. It is pure, in-memory logic: no admission-time equivalent exists yet
-(see that doc's notes on why validation is currently reconciler-only).
+runs. It is pure, in-memory logic: no admission-time equivalent exists (see
+that doc's notes on why cross-object resolution belongs to the reconciler,
+not admission).
 
 ## Attachment basics
 
