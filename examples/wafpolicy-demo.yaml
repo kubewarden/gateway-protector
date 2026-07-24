@@ -1,0 +1,17 @@
+# Demo WAFPolicy for the Tilt dev environment: protects the httpbin sample
+# app (see test/manifests/httpbin.yaml, and the Tiltfile/CONTRIBUTING.md
+# for how it's applied and exercised).
+apiVersion: gateway-protector.kubewarden.io/v1alpha1
+kind: WAFPolicy
+metadata:
+  name: httpbin-demo
+  namespace: gateway-protector-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: httpbin-gateway
+    namespace: httpbin
+  engine:
+    mode: Blocking
+  paranoiaLevel: 1

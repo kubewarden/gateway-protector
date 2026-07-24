@@ -1,0 +1,5 @@
+registry: ghcr.io
+controller:
+    image: <username>/gateway-protector/controller
+processor:
+    image: <username>/gateway-protector/processor
