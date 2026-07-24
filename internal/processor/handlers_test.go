@@ -32,7 +32,7 @@ type kv struct{ key, value string }
 func httpHeaders(pairs ...kv) *envoy_service_ext_proc_v3.HttpHeaders {
 	headers := make([]*envoy_config_core_v3.HeaderValue, 0, len(pairs))
 	for _, p := range pairs {
-		headers = append(headers, headerValue(p.key, p.value))
+		headers = append(headers, rawHeaderValue(p.key, p.value))
 	}
 	return &envoy_service_ext_proc_v3.HttpHeaders{
 		Headers: &envoy_config_core_v3.HeaderMap{Headers: headers},

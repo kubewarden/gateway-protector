@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	coraza_types "github.com/corazawaf/coraza/v3/types"
+	envoy_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	envoy_service_ext_proc_v3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 )
 
@@ -16,6 +17,23 @@ import (
 // both phases of a given transaction. Coraza only uses it for informational
 // SecLang variables (e.g. REQUEST_PROTOCOL).
 const httpProtocol = "HTTP/1.1"
+
+// headerValue returns h's value, regardless of which of the two mutually
+// exclusive wire representations the ext_proc client populated: per
+// envoy.config.core.v3.HeaderValue's own doc comment, "only one of `value`
+// or `raw_value` can be set". agentgateway in particular sets `raw_value`
+// for ordinary headers but `value` for the synthetic pseudo-headers
+// (:authority, :method, :path, :status) it adds to the ext_proc payload -
+// reading only GetRawValue() (as this file used to) silently sees those as
+// empty, which used to make every request look like it was missing
+// pseudo-headers and skip the WAF entirely.
+func headerValue(h *envoy_core_v3.HeaderValue) string {
+	if raw := h.GetRawValue(); len(raw) > 0 {
+		return string(raw)
+	}
+
+	return h.GetValue()
+}
 
 // processRequestHeaders handles the request-headers phase: it resolves the
 // WAF engine for this request's host+path (the host+path routing table
@@ -35,11 +53,11 @@ func (s *Server) processRequestHeaders(ctx context.Context, state *requestState,
 		}
 		switch strings.ToLower(header.GetKey()) {
 		case ":authority", "host":
-			authority = string(header.GetRawValue())
+			authority = headerValue(header)
 		case ":method":
-			method = string(header.GetRawValue())
+			method = headerValue(header)
 		case ":path":
-			path = string(header.GetRawValue())
+			path = headerValue(header)
 		}
 	}
 
@@ -73,18 +91,90 @@ func (s *Server) processRequestHeaders(ctx context.Context, state *requestState,
 	state.tx = tx
 
 	tx.ProcessURI(path, method, httpProtocol)
-	for _, header := range headers.GetHeaders().GetHeaders() {
-		if header == nil || strings.HasPrefix(header.GetKey(), ":") {
-			continue
-		}
-		tx.AddRequestHeader(header.GetKey(), string(header.GetRawValue()))
-	}
+	feedRequestHeaders(tx, headers, authority)
 
 	if interruption := tx.ProcessRequestHeaders(); interruption != nil {
 		return s.blockAndClose(ctx, state, interruption)
 	}
 
+	if headers.GetEndOfStream() {
+		return s.processEndOfRequestWithNoBody(ctx, state)
+	}
+
 	return continueRequestHeaders()
+}
+
+// processEndOfRequestWithNoBody runs Coraza's request-body phase (CRS
+// phase 2) immediately, without waiting for a request-body ext_proc
+// message that will never arrive. Per ext_proc's own protocol contract
+// (see envoy.service.ext_proc.v3.HttpHeaders.end_of_stream's doc comment),
+// EndOfStream == true on the headers message means "there is no message
+// body associated with this request", i.e. no RequestBody message will
+// ever be sent for this stream. Coraza's ARGS-inspecting signature rules
+// (e.g. CRS's 941xxx XSS / 942xxx SQLi rules) only run inside
+// ProcessRequestBody, so without this, any bodyless request (a GET/HEAD/
+// DELETE with no body, or any request with an empty body) carrying an
+// attack purely in its query string would never be evaluated at all - see
+// Coraza's own doc comment on ProcessRequestBody: "It is recommended to
+// call this method even if it is not expected to have a body. It permits
+// to execute rules belonging to request body phase, but not necessarily
+// processing the request body."
+//
+// If a RequestBody message somehow still arrives afterward (a protocol
+// violation, since EndOfStream on the headers message rules that out),
+// processRequestBody's later call to tx.ProcessRequestBody() is a safe
+// no-op: Coraza tracks its own last-evaluated phase on the transaction and
+// skips re-running phase-2 rules once it's already run, so no extra state
+// needs to be tracked here to prevent a double evaluation.
+func (s *Server) processEndOfRequestWithNoBody(ctx context.Context, state *requestState) *envoy_service_ext_proc_v3.ProcessingResponse {
+	interruption, err := state.tx.ProcessRequestBody()
+	if err != nil {
+		s.logger.ErrorContext(ctx, "Failed to process request body", slog.Any("error", err))
+	} else if interruption != nil {
+		return s.blockAndClose(ctx, state, interruption)
+	}
+
+	return continueRequestHeaders()
+}
+
+// feedRequestHeaders copies headers into tx's REQUEST_HEADERS collection,
+// synthesizing a "Host" header from authority when none is already present.
+//
+// Pseudo-headers (colon-prefixed keys: :authority, :method, :path, :scheme)
+// are never fed to Coraza as literal header names, since CRS rules expect
+// ordinary HTTP header names, not HTTP/2 pseudo-headers - but that means
+// HTTP/2's (and ext_proc's) :authority, the only wire representation a
+// Host actually arrives in, would otherwise never populate
+// REQUEST_HEADERS:Host at all. Without the fallback below, the OWASP Core
+// Rule Set's own REQUEST-920-PROTOCOL-ENFORCEMENT.conf rule 920280
+// ("Request Missing a Host Header") fires as a false positive on every
+// single request: that rule alone contributes CRS's critical_anomaly_score,
+// which equals the default paranoia-level-1 inbound threshold, silently
+// consuming the entire anomaly-score budget before any real attack
+// signature is even evaluated.
+func feedRequestHeaders(tx coraza_types.Transaction, headers *envoy_service_ext_proc_v3.HttpHeaders, authority string) {
+	hasHostHeader := false
+
+	for _, header := range headers.GetHeaders().GetHeaders() {
+		if header == nil {
+			continue
+		}
+
+		key := header.GetKey()
+		if strings.EqualFold(key, "host") {
+			hasHostHeader = true
+		}
+
+		if strings.HasPrefix(key, ":") {
+			continue
+		}
+
+		tx.AddRequestHeader(key, headerValue(header))
+	}
+
+	if !hasHostHeader {
+		tx.AddRequestHeader("Host", authority)
+	}
 }
 
 // processRequestBody handles the request-body phase, feeding body chunks
@@ -115,11 +205,34 @@ func (s *Server) processResponseHeaders(ctx context.Context, state *requestState
 	statusCode := 0
 	for _, header := range headers.GetHeaders().GetHeaders() {
 		if header != nil && header.GetKey() == ":status" {
-			statusCode, _ = strconv.Atoi(string(header.GetRawValue()))
+			statusCode, _ = strconv.Atoi(headerValue(header))
 		}
 	}
 
 	if interruption := state.tx.ProcessResponseHeaders(statusCode, httpProtocol); interruption != nil {
+		return s.blockAndClose(ctx, state, interruption)
+	}
+
+	if headers.GetEndOfStream() {
+		return s.processEndOfResponseWithNoBody(ctx, state)
+	}
+
+	return continueResponseHeaders()
+}
+
+// processEndOfResponseWithNoBody is processEndOfRequestWithNoBody's
+// response-phase counterpart: EndOfStream == true on the response headers
+// message (e.g. a 204 No Content, a HEAD response, or any response with an
+// empty body) means no ResponseBody message will ever follow, so Coraza's
+// response-body phase (CRS phase 4) rules must be run here instead. As
+// with the request-phase counterpart, a ResponseBody message that
+// unexpectedly still arrives afterward is handled safely by Coraza itself
+// (see processEndOfRequestWithNoBody's doc comment).
+func (s *Server) processEndOfResponseWithNoBody(ctx context.Context, state *requestState) *envoy_service_ext_proc_v3.ProcessingResponse {
+	interruption, err := state.tx.ProcessResponseBody()
+	if err != nil {
+		s.logger.ErrorContext(ctx, "Failed to process response body", slog.Any("error", err))
+	} else if interruption != nil {
 		return s.blockAndClose(ctx, state, interruption)
 	}
 
