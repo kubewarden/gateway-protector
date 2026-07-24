@@ -25,6 +25,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	gwpv1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
+	"github.com/kubewarden/gateway-protector/internal/agentgatewayapi"
 	procconfig "github.com/kubewarden/gateway-protector/internal/processor/config"
 	// +kubebuilder:scaffold:imports
 )
@@ -104,12 +105,16 @@ var _ = BeforeSuite(func() {
 	err = gatewayv1.Install(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = agentgatewayapi.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:scheme
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "charts", "gateway-protector", "templates", "crd"),
+			filepath.Join("..", "..", "test", "crds"),
 			gatewayAPICRDDirectory(),
 		},
 		ErrorIfCRDPathMissing: true,
@@ -150,9 +155,10 @@ var _ = BeforeSuite(func() {
 	}
 
 	err = (&ProcessorConfigReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Publisher: publishedConfigs,
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		Publisher:          publishedConfigs,
+		ProcessorNamespace: processorConfigMapNamespace,
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 

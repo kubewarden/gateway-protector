@@ -3,9 +3,12 @@ package controller
 import (
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/kubewarden/gateway-protector/internal/agentgatewayapi"
 )
 
 // CacheOptions returns the cache.Options the manager should be constructed
@@ -36,6 +39,15 @@ func CacheOptions() cache.Options {
 			&gatewayv1.HTTPRoute{}: {
 				Transform:             TransformStripHTTPRoute,
 				UnsafeDisableDeepCopy: new(true),
+			},
+			// Only the AgentgatewayPolicy objects this controller itself
+			// generates (see processor_config_wiring.go) are cached and
+			// watched: the label selector keeps user-authored policies out
+			// of both the cache and the watch stream entirely, so their
+			// churn can never trigger a rebuild - and reconcileWiring's
+			// cache-backed List cannot accidentally garbage-collect them.
+			&agentgatewayapi.AgentgatewayPolicy{}: {
+				Label: labels.SelectorFromSet(labels.Set{wiringManagedLabel: wiringManagedLabelValue}),
 			},
 		},
 	}

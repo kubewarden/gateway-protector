@@ -22,12 +22,12 @@ func gatewayTargetRef(namespace, name string, section *gatewayv1.SectionName) gw
 	}
 }
 
-func httpRouteTargetRef(namespace, name string, section *gatewayv1.SectionName) gwpv1alpha1.PolicyTargetReference {
+func httpRouteTargetRef(name string, section *gatewayv1.SectionName) gwpv1alpha1.PolicyTargetReference {
 	return gwpv1alpha1.PolicyTargetReference{
 		Group:       gatewayv1.GroupName,
 		Kind:        "HTTPRoute",
 		Name:        gatewayv1.ObjectName(name),
-		Namespace:   gatewayv1.Namespace(namespace),
+		Namespace:   "team-shop",
 		SectionName: section,
 	}
 }
@@ -42,8 +42,8 @@ func newPolicy(name string, targetRef gwpv1alpha1.PolicyTargetReference) *gwpv1a
 func TestEffectivePolicyForRule(t *testing.T) {
 	gatewayDefault := newPolicy("gw-default", gatewayTargetRef("infra", "shared-gw", nil))
 	gatewaySection := newPolicy("gw-admin", gatewayTargetRef("infra", "shared-gw", new(gatewayv1.SectionName("admin"))))
-	routeDefault := newPolicy("route-default", httpRouteTargetRef("team-shop", "shop", nil))
-	routeRule := newPolicy("route-rule", httpRouteTargetRef("team-shop", "shop", new(gatewayv1.SectionName("checkout"))))
+	routeDefault := newPolicy("route-default", httpRouteTargetRef("shop", nil))
+	routeRule := newPolicy("route-rule", httpRouteTargetRef("shop", new(gatewayv1.SectionName("checkout"))))
 
 	idx := newPolicyIndex([]*gwpv1alpha1.WAFPolicy{gatewayDefault, gatewaySection, routeDefault, routeRule})
 

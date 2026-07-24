@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -93,47 +94,62 @@ func programmedCondition(policy *gwpv1alpha1.WAFPolicy) *metav1.Condition {
 	return meta.FindStatusCondition(policy.Status.Conditions, gwpv1alpha1.ConditionTypeProgrammed)
 }
 
-func fetchPolicy(ctx context.Context, key types.NamespacedName) func() *gwpv1alpha1.WAFPolicy {
-	return func() *gwpv1alpha1.WAFPolicy {
+// fetchPolicy returns a poll function fetching key, for use with
+// Eventually/Expect: a NotFound Get is a genuine "doesn't exist (yet/
+// anymore)" and reported as (nil, nil), not as an error - Eventually would
+// otherwise treat a not-yet-created object as a failed poll attempt
+// instead of simply retrying, and a spec asserting eventual deletion could
+// never succeed. Any other error (e.g. a transient API server error) is
+// returned as-is, which both Eventually (retries) and Expect (fails with
+// the error in the message) handle correctly for a (T, error)-returning
+// function.
+func fetchPolicy(ctx context.Context, key types.NamespacedName) func() (*gwpv1alpha1.WAFPolicy, error) {
+	return func() (*gwpv1alpha1.WAFPolicy, error) {
 		policy := &gwpv1alpha1.WAFPolicy{}
-		if err := k8sClient.Get(ctx, key, policy); err != nil {
-			return nil
+
+		err := k8sClient.Get(ctx, key, policy)
+		if apierrors.IsNotFound(err) {
+			return nil, nil
 		}
 
-		return policy
+		if err != nil {
+			return nil, err
+		}
+
+		return policy, nil
 	}
 }
 
-func fetchAccepted(ctx context.Context, key types.NamespacedName) func() *metav1.Condition {
-	return func() *metav1.Condition {
-		policy := fetchPolicy(ctx, key)()
-		if policy == nil {
-			return nil
+func fetchAccepted(ctx context.Context, key types.NamespacedName) func() (*metav1.Condition, error) {
+	return func() (*metav1.Condition, error) {
+		policy, err := fetchPolicy(ctx, key)()
+		if err != nil || policy == nil {
+			return nil, err
 		}
 
-		return acceptedCondition(policy)
+		return acceptedCondition(policy), nil
 	}
 }
 
-func acceptedStatus(ctx context.Context, key types.NamespacedName) func() metav1.ConditionStatus {
-	return func() metav1.ConditionStatus {
-		condition := fetchAccepted(ctx, key)()
-		if condition == nil {
-			return ""
+func acceptedStatus(ctx context.Context, key types.NamespacedName) func() (metav1.ConditionStatus, error) {
+	return func() (metav1.ConditionStatus, error) {
+		condition, err := fetchAccepted(ctx, key)()
+		if err != nil || condition == nil {
+			return "", err
 		}
 
-		return condition.Status
+		return condition.Status, nil
 	}
 }
 
-func acceptedReason(ctx context.Context, key types.NamespacedName) func() string {
-	return func() string {
-		condition := fetchAccepted(ctx, key)()
-		if condition == nil {
-			return ""
+func acceptedReason(ctx context.Context, key types.NamespacedName) func() (string, error) {
+	return func() (string, error) {
+		condition, err := fetchAccepted(ctx, key)()
+		if err != nil || condition == nil {
+			return "", err
 		}
 
-		return condition.Reason
+		return condition.Reason, nil
 	}
 }
 
@@ -189,7 +205,9 @@ var _ = Describe("WAFPolicy Controller", func() {
 		It("sets Accepted=True/Accepted and, once the config reconciler catches up, Programmed=True/Programmed", func() {
 			Eventually(acceptedStatus(ctx, key)).Should(Equal(metav1.ConditionTrue))
 
-			policy := fetchPolicy(ctx, key)()
+			policy, err := fetchPolicy(ctx, key)()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(policy).NotTo(BeNil())
 
 			accepted := acceptedCondition(policy)
 			Expect(accepted.Reason).To(Equal(gwpv1alpha1.ConditionReasonAccepted))
@@ -203,13 +221,13 @@ var _ = Describe("WAFPolicy Controller", func() {
 			// policy compiles but currently covers zero routes - still
 			// Programmed=True (compiled and published is what matters, not
 			// whether anything currently uses the engine).
-			Eventually(func() *metav1.Condition {
-				updated := fetchPolicy(ctx, key)()
-				if updated == nil {
-					return nil
+			Eventually(func() (*metav1.Condition, error) {
+				updated, err := fetchPolicy(ctx, key)()
+				if err != nil || updated == nil {
+					return nil, err
 				}
 
-				return programmedCondition(updated)
+				return programmedCondition(updated), nil
 			}).Should(And(
 				Not(BeNil()),
 				HaveField("Status", metav1.ConditionTrue),
@@ -219,7 +237,15 @@ var _ = Describe("WAFPolicy Controller", func() {
 			By("bumping the policy's generation")
 			var generation int64
 			Eventually(func() error {
-				current := fetchPolicy(ctx, key)()
+				current, err := fetchPolicy(ctx, key)()
+				if err != nil {
+					return err
+				}
+
+				if current == nil {
+					return errors.New("policy not found yet")
+				}
+
 				current.Spec.ParanoiaLevel = 3
 				if err := k8sClient.Update(ctx, current); err != nil {
 					return err
@@ -230,18 +256,18 @@ var _ = Describe("WAFPolicy Controller", func() {
 				return nil
 			}).Should(Succeed())
 
-			Eventually(func() int64 {
-				updated := fetchPolicy(ctx, key)()
-				if updated == nil {
-					return -1
+			Eventually(func() (int64, error) {
+				updated, err := fetchPolicy(ctx, key)()
+				if err != nil || updated == nil {
+					return -1, err
 				}
 
 				condition := acceptedCondition(updated)
 				if condition == nil {
-					return -1
+					return -1, nil
 				}
 
-				return condition.ObservedGeneration
+				return condition.ObservedGeneration, nil
 			}).Should(Equal(generation))
 		})
 	})
@@ -797,7 +823,8 @@ var _ = Describe("WAFPolicy Controller", func() {
 			Eventually(acceptedReason(ctx, newerKey)).Should(Equal(gwpv1alpha1.ConditionReasonConflicted))
 
 			By("deleting the winning policy so the loser becomes Accepted")
-			winner := fetchPolicy(ctx, olderKey)()
+			winner, err := fetchPolicy(ctx, olderKey)()
+			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Delete(ctx, winner)).To(Succeed())
 
 			Eventually(acceptedStatus(ctx, newerKey)).Should(Equal(metav1.ConditionTrue))
@@ -845,7 +872,8 @@ var _ = Describe("WAFPolicy Controller", func() {
 			Eventually(acceptedReason(ctx, newerKey)).Should(Equal(gwpv1alpha1.ConditionReasonConflicted))
 
 			By("deleting the winning policy so the loser becomes Accepted")
-			winner := fetchPolicy(ctx, olderKey)()
+			winner, err := fetchPolicy(ctx, olderKey)()
+			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Delete(ctx, winner)).To(Succeed())
 
 			Eventually(acceptedStatus(ctx, newerKey)).Should(Equal(metav1.ConditionTrue))

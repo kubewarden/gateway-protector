@@ -257,8 +257,8 @@ func (r *WAFPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&gwpv1alpha1.WAFPolicy{}, changedGeneration).
 		Named("wafpolicy").
 		Watches(&gwpv1alpha1.WAFPolicy{}, handler.EnqueueRequestsFromMapFunc(r.mapSiblingPolicies), changedGeneration).
-		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.mapPoliciesTargetingObject("Gateway")), changedGeneration).
-		Watches(&gatewayv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(r.mapPoliciesTargetingObject("HTTPRoute")), changedGeneration).
+		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.mapPoliciesTargetingObject(kindGateway)), changedGeneration).
+		Watches(&gatewayv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(r.mapPoliciesTargetingObject(kindHTTPRoute)), changedGeneration).
 		Watches(&gwpv1alpha1.WAFRuleSet{}, handler.EnqueueRequestsFromMapFunc(r.mapPoliciesReferencingRuleSet), changedGeneration).
 		Complete(r)
 	if err != nil {

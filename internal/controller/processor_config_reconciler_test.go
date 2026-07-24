@@ -86,13 +86,13 @@ var _ = Describe("ProcessorConfigReconciler", func() {
 		It("publishes an engine and route entry, and sets Programmed=True/Programmed", func() {
 			Eventually(acceptedStatus(ctx, key)).Should(Equal(metav1.ConditionTrue))
 
-			Eventually(func() *metav1.Condition {
-				updated := fetchPolicy(ctx, key)()
-				if updated == nil {
-					return nil
+			Eventually(func() (*metav1.Condition, error) {
+				updated, err := fetchPolicy(ctx, key)()
+				if err != nil || updated == nil {
+					return nil, err
 				}
 
-				return programmedCondition(updated)
+				return programmedCondition(updated), nil
 			}).Should(And(
 				Not(BeNil()),
 				HaveField("Status", metav1.ConditionTrue),
@@ -169,13 +169,13 @@ var _ = Describe("ProcessorConfigReconciler", func() {
 		It("sets Programmed=False/CompileFailed and excludes the policy from the published config", func() {
 			Eventually(acceptedStatus(ctx, key)).Should(Equal(metav1.ConditionTrue))
 
-			Eventually(func() *metav1.Condition {
-				updated := fetchPolicy(ctx, key)()
-				if updated == nil {
-					return nil
+			Eventually(func() (*metav1.Condition, error) {
+				updated, err := fetchPolicy(ctx, key)()
+				if err != nil || updated == nil {
+					return nil, err
 				}
 
-				return programmedCondition(updated)
+				return programmedCondition(updated), nil
 			}).Should(And(
 				Not(BeNil()),
 				HaveField("Status", metav1.ConditionFalse),

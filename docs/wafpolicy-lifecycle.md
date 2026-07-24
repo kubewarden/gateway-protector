@@ -20,7 +20,7 @@ See also:
   multi-parentRef/multi-listener resolution, and how that decision becomes
   the processor's routing table).
 - `docs/agentgateway-extproc.md` — research notes on how agentgateway wires
-  `ext_proc` traffic, feeding the still-planned Gateway wiring (§4 below).
+  `ext_proc` traffic, informing the Gateway wiring (§4 below).
 - `examples/route-override/` — worked examples of the three attachment
   scenarios described in [Attachment model](#attachment-model).
 
@@ -236,15 +236,19 @@ them accordingly:
    `gateway-protector-processor-config`, in the controller's own namespace),
    which the processor Deployment mounts and hot-reloads from (see
    `docs/processor.md`).
-6. **Set `Programmed`** on every Accepted policy considered in step 4:
+6. **Converge the gateway wiring**: one generated `AgentgatewayPolicy` per
+   protected route, applied/garbage-collected in the same pass - see
+   [Gateway wiring](#4-gateway-wiring-implemented).
+7. **Set `Programmed`** on every Accepted policy considered in step 4:
    `True, reason=Programmed` once its engine is compiled and published -
    regardless of whether it currently covers any route (an Accepted policy
    on a `Gateway` with no `HTTPRoute`s yet is still fully live, simply
    unused for now) - or `False, reason=CompileFailed` per step 3.
 
 Because this reconciler is a singleton watching `WAFPolicy`, `WAFRuleSet`,
-`Gateway`, and `HTTPRoute` events (any of which can change what the config
-should contain), any relevant change re-triggers the *entire* rebuild, not
+`Gateway`, `HTTPRoute`, and managed `AgentgatewayPolicy` events (any of
+which can change what the config or wiring should contain), any relevant
+change re-triggers the *entire* rebuild, not
 just the changed object's slice of it. It also primes the processor's
 ConfigMap once at startup (even before any `WAFPolicy` exists), so a fresh
 install always starts with a valid, inert config instead of a missing
@@ -277,17 +281,59 @@ into the thousands. Two things keep it that way:
   status churn - which can be very frequent - never triggers a rebuild at
   all.
 
-### 4. Gateway wiring (planned)
+### 4. Gateway wiring (implemented)
 
-Not implemented yet. For every route actually protected by an accepted
-`WAFPolicy`, the reconciler is expected to render/reconcile a generated
-`AgentgatewayPolicy` object that wires that route's traffic through the
-processor's `ext_proc` service (`spec.traffic.extProc`): the shared processor
-Service as `backendRef`, and `processingOptions` sized to what the engine
-actually needs (e.g. only buffering the request body when
-`spec.requestBody.enabled` is true). Each generated `AgentgatewayPolicy` is
-owned by the route it protects, so deleting or unattaching the route garbage
-collects the generated object automatically.
+The same singleton reconcile that publishes the processor config (§3) also
+converges the gateway-side wiring: for every `HTTPRoute` with at least one
+rule covered by an Accepted, successfully-compiled `WAFPolicy`, it
+generates one `AgentgatewayPolicy` (`agentgateway.dev/v1alpha1`) that wires
+the route's traffic through the processor's `ext_proc` service (see
+`internal/controller/processor_config_wiring.go`):
+
+- **One policy per protected route, in the route's namespace** -
+  `AgentgatewayPolicy` target references are namespace-local, so the
+  generated object must live next to the route it targets. It targets the
+  *whole* route (no `sectionName`): per-rule engine selection stays the
+  processor's host+path table's job, so a route where only some rules are
+  covered still wires all of them - uncovered traffic simply finds no
+  table entry and continues unprotected.
+- **`backendRef`** points at the processor Service (fixed name
+  `gateway-protector-processor`, port 9000, in the controller's own
+  namespace - a cross-namespace ref, which agentgateway permits without a
+  `ReferenceGrant` under its default `BACKEND_REF_GRANT_MODE=route`; the
+  stricter `route-and-policy` mode would require one in the controller's
+  namespace).
+- **`processingOptions` are sized to what the route's engines actually
+  inspect**: header phases are always sent (engine selection needs
+  host+path); a body phase is `FullDuplexStreamed` when any covered rule's
+  effective policy inspects it and `None` otherwise. Note that a *nil*
+  `requestBody`/`responseBody` spec means the Core Rule Set's recommended
+  defaults apply - and those enable both body phases - so only an explicit
+  `enabled: false` turns a body phase off. A route covered only by
+  `mode: Off` policies is still wired (its explicit off engine is what
+  makes the opt-out visible to the processor), with both body phases off.
+- **Server-side apply + label-based garbage collection**: the objects are
+  applied under the `gateway-protector` field manager (so manual drift on
+  the fields this controller owns is repaired without clobbering anything
+  another manager set) and labeled
+  `gateway-protector.kubewarden.io/managed=true`; any labeled policy whose
+  route is no longer protected is deleted on the next rebuild. Each object
+  also carries an owner reference to its route, so deleting the route
+  garbage-collects the wiring even while the controller isn't running.
+
+Two caveats worth knowing:
+
+- A user-authored `AgentgatewayPolicy` with `strategy.inheritance:
+  Override` attached at Gateway level **locks** the `extProc` field:
+  agentgateway will silently ignore the generated route-level wiring for
+  those routes, since same-kind traffic policies replace rather than merge
+  and a locked field can no longer be replaced by a more-specific one.
+  Similarly, don't author your own route-level `extProc` on protected
+  routes - it contends with the generated one at the same specificity.
+- The agentgateway CRDs must be installed: generating wiring is not
+  optional or feature-gated (it is the point of this project), so a
+  missing `AgentgatewayPolicy` CRD surfaces as reconcile errors until it
+  is installed.
 
 **Known constraint:** as of the agentgateway version inspected in
 `docs/agentgateway-extproc.md`, `AgentgatewayPolicy`'s `extProc` has no
@@ -331,22 +377,26 @@ condition change, since that transition is status-only but is exactly what
 | A sibling `WAFPolicy` targeting the same attachment point | Every policy sharing that attachment point is re-evaluated — e.g. deleting the winner of a conflict promotes the oldest remaining loser to `Accepted`. |
 | The targeted `Gateway`/`HTTPRoute`              | Every `WAFPolicy` targeting that object (any `sectionName`) is re-evaluated, e.g. a renamed/removed listener flips `Accepted` to `TargetNotFound`. |
 | A referenced `WAFRuleSet`                       | Every `WAFPolicy` whose `customRulesRefs` names it is re-evaluated.                                                 |
-| Any `WAFPolicy`, `WAFRuleSet`, `Gateway`, or `HTTPRoute` change | The entire processor config is rebuilt from every currently Accepted `WAFPolicy` and republished; `Programmed` is refreshed on all of them (see [Programming](#3-programming-implemented)). |
+| Any `WAFPolicy`, `WAFRuleSet`, `Gateway`, or `HTTPRoute` change | The entire processor config is rebuilt from every currently Accepted `WAFPolicy` and republished, and the generated `AgentgatewayPolicy` wiring re-converged; `Programmed` is refreshed on all of them (see [Programming](#3-programming-implemented) and [Gateway wiring](#4-gateway-wiring-implemented)). |
+| A generated `AgentgatewayPolicy` (managed label) | Any change - manual edit, deletion - re-triggers the same rebuild, whose wiring step re-applies the desired state (drift repair). User-authored `AgentgatewayPolicy` objects are excluded from both the cache and the watch by a label selector. |
 
 ### Deletion
 
-`WAFPolicy` has no finalizer today: there is nothing external for the
-reconciler to clean up yet (once `AgentgatewayPolicy` generation lands, that
-will need one, so the generated objects can be reliably GC'd rather than
-relying solely on owner references). Deleting a `WAFPolicy` that was the
-winner of a conflict causes its former loser(s) to be re-evaluated (see the
-table above) and, if still the oldest remaining policy for that attachment
-point, promoted to `Accepted=True`. Deleting any `WAFPolicy` also
-re-triggers `ProcessorConfigReconciler` (it watches `WAFPolicy` events),
-which republishes the processor config without that policy's engine/routes
-- no separate cleanup step is needed since the config is rebuilt from
-scratch (every currently Accepted policy) on every reconcile, not patched
-incrementally.
+`WAFPolicy` has no finalizer, and doesn't need one even with
+[Gateway wiring](#4-gateway-wiring-implemented) generating
+`AgentgatewayPolicy` objects: the generated objects are keyed to the
+*routes* they protect, not to any single `WAFPolicy`, and deleting a
+`WAFPolicy` re-triggers the same rebuild that garbage-collects any
+generated object whose route is no longer protected (label-based GC, plus
+an owner reference to the route as a backstop). Deleting a `WAFPolicy`
+that was the winner of a conflict causes its former loser(s) to be
+re-evaluated (see the table above) and, if still the oldest remaining
+policy for that attachment point, promoted to `Accepted=True`. Deleting
+any `WAFPolicy` also re-triggers `ProcessorConfigReconciler` (it watches
+`WAFPolicy` events), which republishes the processor config without that
+policy's engine/routes - no separate cleanup step is needed since the
+config is rebuilt from scratch (every currently Accepted policy) on every
+reconcile, not patched incrementally.
 
 ## Status conditions reference
 
@@ -373,4 +423,4 @@ without needing `-o yaml`.
 | A route-level policy isn't overriding the Gateway default | `targetRef` doesn't actually match the route (wrong `namespace`/`name`/`sectionName`), or it targets the Gateway again instead of the `HTTPRoute` | Verify `spec.targetRef.kind` is `HTTPRoute` and every field matches the intended route exactly. |
 | `Programmed` stays `False/Pending` even though `Accepted=True` | `ProcessorConfigReconciler` hasn't run yet (should be within moments - it watches `WAFPolicy` changes) or is failing to publish (check its logs and RBAC on the processor's ConfigMap). | Check the controller's logs for `processor-config` reconcile errors.                       |
 | `Programmed=False/CompileFailed`                      | The policy's composed directives don't compile - almost always a malformed custom `SecRule` in a referenced `WAFRuleSet`. | Read the condition message (the Coraza compiler error) and fix the offending `WAFRuleSet.spec.rules[].directive`. |
-| The processor doesn't seem to be enforcing a policy that shows `Programmed=True` | The processor hasn't picked up the new ConfigMap yet (kubelet sync + inotify reload latency, typically well under a second - see `docs/processor.md`'s "Hot reload"), or nothing routes traffic through it yet (Gateway wiring - see [§4](#4-gateway-wiring-planned) - isn't implemented). | Check the processor's logs for a "Reloaded processor config" line; confirm `AgentgatewayPolicy` generation isn't the missing piece. |
+| The processor doesn't seem to be enforcing a policy that shows `Programmed=True` | The processor hasn't picked up the new ConfigMap yet (kubelet sync + inotify reload latency, typically well under a second - see `docs/processor.md`'s "Hot reload"), the route's generated `AgentgatewayPolicy` hasn't been applied yet (see [§4](#4-gateway-wiring-implemented)), or a user-authored Gateway-level `AgentgatewayPolicy` with `strategy.inheritance: Override` is locking `extProc` (see §4's caveats). | Check the processor's logs for a "Reloaded processor config" line, and `kubectl get agentgatewaypolicies -n <route namespace>` for the generated wiring object. |

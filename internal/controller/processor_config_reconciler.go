@@ -22,6 +22,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	gwpv1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
+	"github.com/kubewarden/gateway-protector/internal/agentgatewayapi"
 	"github.com/kubewarden/gateway-protector/internal/controller/processorconfig"
 )
 
@@ -61,6 +62,13 @@ type ProcessorConfigReconciler struct {
 	Scheme    *runtime.Scheme
 	Publisher ConfigPublisher
 
+	// ProcessorNamespace is the namespace the processor Service
+	// (ProcessorServiceName) lives in - the controller's own namespace,
+	// resolved from POD_NAMESPACE in production (see
+	// cmd/controller/main.go's podNamespace). Generated AgentgatewayPolicy
+	// objects point their ext_proc backendRef there.
+	ProcessorNamespace string
+
 	compileCache *processorconfig.CompileCache
 }
 
@@ -69,11 +77,14 @@ type ProcessorConfigReconciler struct {
 // +kubebuilder:rbac:groups=gateway-protector.kubewarden.io,resources=wafrulesets,verbs=get;list;watch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;httproutes,verbs=get;list;watch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
+// +kubebuilder:rbac:groups=agentgateway.dev,resources=agentgatewaypolicies,verbs=get;list;watch;create;update;patch;delete,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 
 // Reconcile rebuilds the processor's data-plane config from every
-// Accepted=True WAFPolicy in the cluster, publishes it via r.Publisher, and
-// sets Programmed on each Accepted WAFPolicy according to whether its
-// composed directives compiled successfully:
+// Accepted=True WAFPolicy in the cluster, publishes it via r.Publisher,
+// converges the generated AgentgatewayPolicy wiring (one per protected
+// HTTPRoute, wiring its traffic through the processor's ext_proc Service -
+// see reconcileWiring), and sets Programmed on each Accepted WAFPolicy
+// according to whether its composed directives compiled successfully:
 //
 //   - Programmed=True/Programmed once its engine is compiled and published,
 //     regardless of whether it currently covers any route (an accepted
@@ -83,8 +94,8 @@ type ProcessorConfigReconciler struct {
 //     Core Rule Set + paranoiaLevel + anomalyThreshold + exclusions +
 //     referenced WAFRuleSet.spec.rules) fail to compile; that policy - and
 //     every route it would have covered - is excluded from the published
-//     config rather than blocking every other policy's config from being
-//     published
+//     config, and its routes from the generated wiring, rather than
+//     blocking every other policy's config from being published
 //
 // Programmed is otherwise left untouched here: a WAFPolicy that isn't
 // Accepted keeps whatever Programmed=False/Pending WAFPolicyReconciler set
@@ -123,10 +134,10 @@ func (r *ProcessorConfigReconciler) Reconcile(ctx context.Context, _ ctrl.Reques
 		r.compileCache = processorconfig.NewCompileCache(processorconfig.CorazaDryCompile)
 	}
 
-	cfg, results := processorconfig.Build(input, r.compileCache.Compile)
+	buildResult := processorconfig.Build(input, r.compileCache.Compile)
 	r.compileCache.Sweep()
 
-	if err := r.Publisher.Publish(ctx, cfg); err != nil {
+	if err := r.Publisher.Publish(ctx, buildResult.Config); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to publish processor config: %w", err)
 	}
 
@@ -139,7 +150,11 @@ func (r *ProcessorConfigReconciler) Reconcile(ctx context.Context, _ ctrl.Reques
 	// this singleton.
 	var errs []error
 
-	for _, result := range results {
+	if err := r.reconcileWiring(ctx, buildResult.Wiring); err != nil {
+		errs = append(errs, err)
+	}
+
+	for _, result := range buildResult.PolicyResults {
 		if err := r.updateProgrammed(ctx, result); err != nil {
 			errs = append(errs, err)
 		}
@@ -278,6 +293,13 @@ func (r *ProcessorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&gatewayv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(enqueueProcessorConfig),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// Generated AgentgatewayPolicy objects are watched for drift
+		// repair: the cache only holds objects carrying wiringManagedLabel
+		// (see CacheOptions), so this can never fire for user-authored
+		// policies. Any change to a managed one - manual edit, deletion -
+		// re-triggers the rebuild, whose reconcileWiring re-applies the
+		// desired state.
+		Watches(&agentgatewayapi.AgentgatewayPolicy{}, handler.EnqueueRequestsFromMapFunc(enqueueProcessorConfig)).
 		Complete(r)
 	if err != nil {
 		return fmt.Errorf("failed to create processor-config controller: %w", err)

@@ -1,7 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "gateway-protector.fullname" . }}-processor
+  # The name is deliberately fixed rather than derived from the Helm
+  # release: the controller generates AgentgatewayPolicy objects whose
+  # ext_proc backendRef points at this Service by name (see
+  # internal/controller/processor_config_wiring.go's ProcessorServiceName),
+  # exactly like the hardcoded processor ConfigMap name.
+  name: gateway-protector-processor
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "gateway-protector.labels" . | nindent 4 }}

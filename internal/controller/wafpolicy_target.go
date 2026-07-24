@@ -20,6 +20,17 @@ type targetNotFoundError struct {
 	message string
 }
 
+// kindGateway and kindHTTPRoute are the two targetRef.kind values
+// PolicyTargetReference supports (see api/v1alpha1/common_types.go's
+// +kubebuilder:validation:Enum marker). sigs.k8s.io/gateway-api exports a
+// Kind *type* but no constants for these two kind names, so this package
+// defines its own rather than repeating the string literal at every call
+// site.
+const (
+	kindGateway   = "Gateway"
+	kindHTTPRoute = "HTTPRoute"
+)
+
 func (e *targetNotFoundError) Error() string {
 	return e.message
 }
@@ -36,9 +47,9 @@ func resolveTarget(ctx context.Context, c client.Client, policy *gwpv1alpha1.WAF
 	ref := policy.Spec.TargetRef
 
 	switch ref.Kind {
-	case "Gateway":
+	case kindGateway:
 		return resolveGatewayTarget(ctx, c, ref)
-	case "HTTPRoute":
+	case kindHTTPRoute:
 		return resolveHTTPRouteTarget(ctx, c, ref)
 	default:
 		// The +kubebuilder:validation:Enum marker on PolicyTargetReference.Kind

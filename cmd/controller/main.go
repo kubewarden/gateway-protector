@@ -37,6 +37,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	gwpv1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
+	"github.com/kubewarden/gateway-protector/internal/agentgatewayapi"
 	"github.com/kubewarden/gateway-protector/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -51,6 +52,7 @@ func init() {
 	utilruntime.Must(gatewayv1.Install(scheme))
 
 	utilruntime.Must(gwpv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(agentgatewayapi.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -194,6 +196,7 @@ func main() {
 			Client:    mgr.GetClient(),
 			Namespace: namespace,
 		},
+		ProcessorNamespace: namespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "processor-config")
 		os.Exit(1)

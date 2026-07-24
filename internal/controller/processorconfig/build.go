@@ -43,6 +43,25 @@ type PolicyResult struct {
 	Err        error
 }
 
+// BuildResult is everything one Build pass produces.
+type BuildResult struct {
+	// Config is the processor's data-plane config to publish: one
+	// directive block per distinct rendered engine, and the host+path
+	// routing table selecting one per HTTPRoute rule.
+	Config *procconfig.Config
+
+	// PolicyResults reports, for every policy in Build's input, whether it
+	// was included in Config or excluded because its directives failed to
+	// compile (see PolicyResult).
+	PolicyResults []PolicyResult
+
+	// Wiring is one entry per HTTPRoute with at least one successfully
+	// covered rule: the ext_proc attachment that route needs in the
+	// gateway (see internal/controller's generation of AgentgatewayPolicy
+	// objects from this).
+	Wiring []RouteWiring
+}
+
 // DryCompiler verifies that a single engine's directives compile, without
 // requiring the full procconfig.Config/Validate machinery. Build calls it
 // once per distinct rendered engine (see EngineKey), so one policy's
@@ -71,9 +90,9 @@ func CorazaDryCompile(engineKey, directives string) error {
 //
 // Build never returns an error itself: a policy whose directives fail to
 // compile is reported via its PolicyResult.Err and simply excluded from the
-// returned Config - and from covering any route - rather than failing the
-// whole build (see docs/wafpolicy-lifecycle.md).
-func Build(input Input, compile DryCompiler) (*procconfig.Config, []PolicyResult) {
+// returned Config - and from covering any route or producing any wiring -
+// rather than failing the whole build (see docs/wafpolicy-lifecycle.md).
+func Build(input Input, compile DryCompiler) BuildResult {
 	ruleSetIndex := indexRuleSets(input.RuleSets)
 	gatewayIndex := indexGateways(input.Gateways)
 	policyIdx := newPolicyIndex(input.Policies)
@@ -108,9 +127,13 @@ func Build(input Input, compile DryCompiler) (*procconfig.Config, []PolicyResult
 		engineKeyByPolicy[policy] = engineKey
 	}
 
-	routes := buildRoutes(input.HTTPRoutes, policyIdx, gatewayIndex, engineKeyByPolicy, resultByPolicy)
+	routes, wiring := buildRoutes(input.HTTPRoutes, policyIdx, gatewayIndex, engineKeyByPolicy, resultByPolicy)
 
-	return &procconfig.Config{Directives: directives, Routes: routes}, results
+	return BuildResult{
+		Config:        &procconfig.Config{Directives: directives, Routes: routes},
+		PolicyResults: results,
+		Wiring:        wiring,
+	}
 }
 
 func buildRoutes(
@@ -119,44 +142,82 @@ func buildRoutes(
 	gatewayIndex map[types.NamespacedName]*gatewayv1.Gateway,
 	engineKeyByPolicy map[*gwpv1alpha1.WAFPolicy]string,
 	resultByPolicy map[*gwpv1alpha1.WAFPolicy]*PolicyResult,
-) []procconfig.Route {
+) ([]procconfig.Route, []RouteWiring) {
 	var routes []procconfig.Route
 
+	var wiring []RouteWiring
+
 	for _, route := range httpRoutes {
-		for r := range route.Spec.Rules {
-			rule := &route.Spec.Rules[r]
+		entries, routeWiring := buildRouteEntries(route, policyIdx, gatewayIndex, engineKeyByPolicy, resultByPolicy)
+		if routeWiring == nil {
+			continue
+		}
 
-			policy := effectivePolicyForRule(policyIdx, route, rule)
-			if policy == nil {
-				continue
-			}
+		routes = append(routes, entries...)
+		wiring = append(wiring, *routeWiring)
+	}
 
-			engineKey, ok := engineKeyByPolicy[policy]
-			if !ok {
-				// The policy that would cover this rule failed to compile;
-				// leave the rule with no entry (unprotected) rather than
-				// silently falling back to a different policy.
-				continue
-			}
+	return routes, wiring
+}
 
-			hosts := routeHosts(route, gatewayIndex)
-			paths := rulePaths(rule)
-			result := resultByPolicy[policy]
+// buildRouteEntries computes one HTTPRoute's contribution to the routing
+// table and its wiring needs. It returns a nil RouteWiring when no rule of
+// the route is (successfully) covered by any policy - covered is otherwise
+// equivalent to "the route needs wiring" so no separate bool is needed.
+// Note entries can be empty even for a covered route (e.g. a rule whose
+// only path matches are RegularExpression, which the prefix-based table
+// cannot represent), so entries' emptiness cannot be used as that signal.
+func buildRouteEntries(
+	route *gatewayv1.HTTPRoute,
+	policyIdx *policyIndex,
+	gatewayIndex map[types.NamespacedName]*gatewayv1.Gateway,
+	engineKeyByPolicy map[*gwpv1alpha1.WAFPolicy]string,
+	resultByPolicy map[*gwpv1alpha1.WAFPolicy]*PolicyResult,
+) ([]procconfig.Route, *RouteWiring) {
+	var entries []procconfig.Route
 
-			for _, host := range hosts {
-				for _, path := range paths {
-					routes = append(routes, procconfig.Route{
-						Host:       host,
-						PathPrefix: path,
-						WAF:        &procconfig.WAFRef{EngineKey: engineKey},
-					})
-					result.RouteCount++
-				}
+	var wiring *RouteWiring
+
+	for r := range route.Spec.Rules {
+		rule := &route.Spec.Rules[r]
+
+		policy := effectivePolicyForRule(policyIdx, route, rule)
+		if policy == nil {
+			continue
+		}
+
+		engineKey, ok := engineKeyByPolicy[policy]
+		if !ok {
+			// The policy that would cover this rule failed to compile;
+			// leave the rule with no entry (unprotected) rather than
+			// silently falling back to a different policy.
+			continue
+		}
+
+		if wiring == nil {
+			wiring = &RouteWiring{Route: route}
+		}
+
+		wiring.NeedRequestBody = wiring.NeedRequestBody || policyNeedsRequestBody(policy)
+		wiring.NeedResponseBody = wiring.NeedResponseBody || policyNeedsResponseBody(policy)
+
+		hosts := routeHosts(route, gatewayIndex)
+		paths := rulePaths(rule)
+		result := resultByPolicy[policy]
+
+		for _, host := range hosts {
+			for _, path := range paths {
+				entries = append(entries, procconfig.Route{
+					Host:       host,
+					PathPrefix: path,
+					WAF:        &procconfig.WAFRef{EngineKey: engineKey},
+				})
+				result.RouteCount++
 			}
 		}
 	}
 
-	return routes
+	return entries, wiring
 }
 
 func indexRuleSets(ruleSets []*gwpv1alpha1.WAFRuleSet) map[types.NamespacedName]*gwpv1alpha1.WAFRuleSet {

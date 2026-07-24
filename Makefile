@@ -80,7 +80,7 @@ generate: generate-controller generate-chart generate-docs
 
 .PHONY: generate-controller
 generate-controller: manifests  ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(GO_BUILD_ENV) $(CONTROLLER_GEN) object paths="./api/v1alpha1"
+	$(GO_BUILD_ENV) $(CONTROLLER_GEN) object paths="./api/v1alpha1" paths="./internal/agentgatewayapi"
 
 .PHONY: manifests
 manifests: ## Generate ClusterRole and CustomResourceDefinition objects. We use sed to inject labels that controller-gen markers can't express (see role.yaml); everything else (names) comes from the roleName= marker in the Go source.

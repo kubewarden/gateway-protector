@@ -90,7 +90,10 @@ Once a rule's governing policy is known, it still has to become a `host` +
 `pathPrefix` entry in the processor's table (see
 [`docs/processor.md`](processor.md#configuration) for the table's shape).
 That requires resolving *which hostnames* and *which paths* the rule
-actually covers.
+actually covers. (Separately, every route with at least one covered rule
+also gets a generated `AgentgatewayPolicy` wiring its traffic through the
+processor - see
+[`docs/wafpolicy-lifecycle.md` §4](wafpolicy-lifecycle.md#4-gateway-wiring-implemented).)
 
 ### Hostnames (`routeHosts`)
 
