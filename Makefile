@@ -8,7 +8,7 @@ ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_V
 HELM_SCHEMA ?= go run github.com/losisin/helm-values-schema-json/v2@$(HELM_VALUES_SCHEMA_JSON_VERSION)
 
 GO_MOD_SRCS := go.mod go.sum
-GO_BUILD_ENV := CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOEXPERIMENT=jsonv2
+GO_BUILD_ENV := CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 
 ENVTEST_DIR ?= $(shell pwd)/.envtest
 
