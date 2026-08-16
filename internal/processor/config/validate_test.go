@@ -22,8 +22,20 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		{
-			name:    "no directives",
-			cfg:     Config{Routes: []Route{{Host: "example.com", PathPrefix: "/"}}},
+			name: "completely empty config is valid",
+			cfg:  Config{},
+		},
+		{
+			name: "no directives, route without waf ref is allowed",
+			cfg:  Config{Routes: []Route{{Host: "example.com", PathPrefix: "/"}}},
+		},
+		{
+			name: "no directives, route with waf ref is rejected",
+			cfg: Config{
+				Routes: []Route{
+					{Host: "example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "a"}},
+				},
+			},
 			wantErr: true,
 		},
 		{

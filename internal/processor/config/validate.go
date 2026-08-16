@@ -10,11 +10,12 @@ import (
 // routes[].waf.engineKey must reference an entry in directives, every
 // directives entry must be non-empty, and every route must have a valid
 // host and pathPrefix.
+//
+// An empty config (no directives, no routes) is valid: it's the state a
+// fresh installation publishes before any WAFPolicy exists anywhere in the
+// cluster, and nothing in it references a missing engine, so there is
+// nothing to reject.
 func Validate(cfg *Config) error {
-	if len(cfg.Directives) == 0 {
-		return errors.New("directives: must define at least one engine")
-	}
-
 	for key, directives := range cfg.Directives {
 		if strings.TrimSpace(key) == "" {
 			return errors.New("directives: engine key must not be empty")

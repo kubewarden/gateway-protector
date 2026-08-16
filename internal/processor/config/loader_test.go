@@ -54,7 +54,7 @@ func TestLoadFileErrors(t *testing.T) {
 		{
 			name:       "invalid semantics",
 			file:       "invalid-semantics.yaml",
-			content:    "directives: {}\n",
+			content:    "routes:\n  - host: example.com\n    pathPrefix: /\n    waf:\n      engineKey: missing\n",
 			createFile: true,
 		},
 	}
