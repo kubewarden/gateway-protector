@@ -29,7 +29,7 @@ helm-unittest:
 	helm unittest charts/gateway-protector --file "tests/**/*_test.yaml"
 
 .PHONY: test-e2e
-test-e2e: controller-image
+test-e2e: controller-image processor-image
 	# TODO: decrease timeout once we move to self-hosted runners
 	$(GO_BUILD_ENV) go test ./test/e2e/ -v -timeout 30m
 
