@@ -189,12 +189,18 @@ docker_build_with_restart(
 )
 
 # httpbin sample app + Gateway/HTTPRoute wiring it through agentgateway
-# (see test/manifests/httpbin.yaml - shared with test/e2e once that suite
-# exists), plus a demo WAFPolicy protecting it, so the whole loop is
-# exercisable right after `tilt up`:
+# (see test/manifests/httpbin.yaml - shared with test/e2e), plus a demo
+# WAFPolicy protecting it, so the whole loop is exercisable right after
+# `tilt up`:
 #
-#   curl -s localhost:8080/get                                # 200
-#   curl -s "localhost:8080/get?q=<script>alert(1)</script>"  # 403
+#   curl -s localhost:8080/get                                       # 200
+#   curl -s "localhost:8080/get?q=%3Cscript%3Ealert(1)%3C/script%3E"  # 403
+#
+# The XSS payload must be percent-encoded: agentgateway's HTTP/1.1 front
+# end rejects a raw, unescaped "<"/">" in the request target with its own
+# 400 before the request ever reaches the processor, independently of any
+# WAFPolicy. Coraza/CRS decode percent-encoding before pattern matching,
+# so the encoded form still triggers the same rule.
 k8s_yaml("test/manifests/httpbin.yaml")
 k8s_resource(
     "httpbin",
