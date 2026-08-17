@@ -125,8 +125,10 @@ kubectl get wafpolicy -n gateway-protector-system
 # The generated ext_proc wiring for the httpbin route
 kubectl get agentgatewaypolicies -n httpbin
 
-# The published processor config (engines + routing table)
-kubectl get configmap gateway-protector-processor-config -n gateway-protector-system -o yaml
+# The processor's logs show every config it received and applied from the
+# controller (see docs/processor.md's "Config stream" section),
+# the config is pushed directly over gRPC
+kubectl logs -n gateway-protector-system deploy/gateway-protector-processor
 ```
 
 ## Generate code
@@ -138,6 +140,31 @@ make generate
 ```
 
 This will automatically update the API reference documentation in [`docs/crds`](docs/crds/README.md).
+
+When you change `proto/configstream/v1/config_stream.proto` (the controller<->processor config
+stream - see `docs/processor.md`'s "Config stream" section), regenerate its Go bindings with:
+
+```shell
+make generate-proto
+```
+
+This uses [`buf`](https://buf.build) (a pure-Go protobuf compiler) instead of `protoc`, so there's
+nothing to install system-wide: `buf` and the `protoc-gen-go`/`protoc-gen-go-grpc` plugins (the
+latter two pinned as `go.mod` `tool` directives, so their versions always match the
+`google.golang.org/protobuf`/`google.golang.org/grpc` versions the code actually builds against) are
+all downloaded automatically, like every other pinned tool in the Makefile.
+
+`make lint` also runs `buf lint` and `buf format --exit-code -d` against `proto/`; `make fmt` runs
+`buf format -w`. Before changing the proto's wire format (removing/renumbering/retyping a field,
+renaming an RPC, etc.), run:
+
+```shell
+make proto-breaking
+```
+
+This checks `proto/` against the `main` branch for breaking changes using `buf breaking`. It's not
+run in CI (it needs full git history, which shallow CI checkouts don't have), so run it locally
+before pushing.
 
 ## Writing Tests
 

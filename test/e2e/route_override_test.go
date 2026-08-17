@@ -4,9 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,8 +17,6 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/kubewarden/gateway-protector/api/v1alpha1"
-	"github.com/kubewarden/gateway-protector/internal/controller"
-	procconfig "github.com/kubewarden/gateway-protector/internal/processor/config"
 )
 
 const (
@@ -186,52 +182,6 @@ func TestWAFPolicyRouteOverride(t *testing.T) {
 				)
 				require.NoError(t, err, "WAFPolicy %s never became Programmed", name)
 			}
-
-			return ctx
-		}).
-		Assess("Processor config's routing table reflects three distinct engines", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			var cfgMap corev1.ConfigMap
-			err := wait.For(func(ctx context.Context) (bool, error) {
-				if err := cfg.Client().Resources(namespace).Get(ctx, controller.ProcessorConfigMapName, namespace, &cfgMap); err != nil {
-					return false, nil //nolint:nilerr // keep polling until the ConfigMap exists
-				}
-
-				return len(cfgMap.Data["config.yaml"]) > 0, nil
-			}, wait.WithTimeout(statusTimeout))
-			require.NoError(t, err, "processor ConfigMap was never published")
-
-			var procCfg procconfig.Config
-			err = yaml.Unmarshal([]byte(cfgMap.Data["config.yaml"]), &procCfg)
-			require.NoError(t, err, "failed to parse published processor config")
-
-			findRoute := func(host, pathPrefix string) *procconfig.Route {
-				for i := range procCfg.Routes {
-					if procCfg.Routes[i].Host == host && procCfg.Routes[i].PathPrefix == pathPrefix {
-						return &procCfg.Routes[i]
-					}
-				}
-
-				return nil
-			}
-
-			catchAll := findRoute("*", "/")
-			ruleGet := findRoute(routeOverrideHost, "/get")
-			ruleStatus := findRoute(routeOverrideHost, "/status")
-
-			require.NotNil(t, catchAll, "expected a catch-all route entry")
-			require.NotNil(t, ruleGet, "expected a %s/get route entry", routeOverrideHost)
-			require.NotNil(t, ruleStatus, "expected a %s/status route entry", routeOverrideHost)
-
-			require.NotNil(t, catchAll.WAF, "catch-all route should have a WAF engine (Gateway-default Detection)")
-			require.NotNil(t, ruleGet.WAF, "get rule should have a WAF engine (rule-specific Off)")
-			require.NotNil(t, ruleStatus.WAF, "status rule should have a WAF engine (route-default Blocking)")
-
-			assert.NotEqual(t, catchAll.WAF.EngineKey, ruleGet.WAF.EngineKey,
-				"Gateway-default and rule-specific engines should differ (Detection vs Off)")
-			assert.NotEqual(t, catchAll.WAF.EngineKey, ruleStatus.WAF.EngineKey,
-				"Gateway-default and route-default engines should differ (Detection vs Blocking)")
-			assert.NotEqual(t, ruleGet.WAF.EngineKey, ruleStatus.WAF.EngineKey,
-				"rule-specific and route-default engines should differ (Off vs Blocking)")
 
 			return ctx
 		}).

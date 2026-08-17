@@ -6,7 +6,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,8 +18,6 @@ import (
 
 	"github.com/kubewarden/gateway-protector/api/v1alpha1"
 	"github.com/kubewarden/gateway-protector/internal/agentgatewayapi"
-	"github.com/kubewarden/gateway-protector/internal/controller"
-	procconfig "github.com/kubewarden/gateway-protector/internal/processor/config"
 )
 
 // httpbinNamespace/wafPolicyName: TestWAFPolicyGatewayLifecycle is the one
@@ -101,35 +98,18 @@ func TestWAFPolicyGatewayLifecycle(t *testing.T) {
 			return ctx
 		}).
 		Assess("Controller publishes processor config and AgentgatewayPolicy wiring", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			var cfgMap corev1.ConfigMap
-			err := wait.For(func(ctx context.Context) (bool, error) {
-				if err := cfg.Client().Resources(namespace).Get(ctx, controller.ProcessorConfigMapName, namespace, &cfgMap); err != nil {
-					return false, nil //nolint:nilerr // keep polling until the ConfigMap exists
-				}
-
-				return len(cfgMap.Data["config.yaml"]) > 0, nil
-			}, wait.WithTimeout(statusTimeout))
-			require.NoError(t, err, "processor ConfigMap %s/%s was never published", namespace, controller.ProcessorConfigMapName)
-
-			var procCfg procconfig.Config
-			err = yaml.Unmarshal([]byte(cfgMap.Data["config.yaml"]), &procCfg)
-			require.NoError(t, err, "failed to parse published processor config")
-
-			var httpbinRoute *procconfig.Route
-			for i := range procCfg.Routes {
-				if procCfg.Routes[i].Host == "*" {
-					httpbinRoute = &procCfg.Routes[i]
-
-					break
-				}
-			}
-			require.NotNil(t, httpbinRoute, "expected a catch-all route in the published processor config")
-			assert.NotNil(t, httpbinRoute.WAF, "expected the catch-all route to have a WAF engine attached")
-
+			// The processor config itself (engines + routing table) is
+			// pushed to processor replicas directly over the gRPC config
+			// stream (see docs/processor.md's "Config stream" section),
+			// not exposed through the Kubernetes API. Whether the
+			// controller actually published a WAF-engine route for this
+			// Gateway is asserted behaviorally instead, by the "Malicious
+			// request is blocked"/"Benign request still succeeds" steps
+			// below.
 			agwPolicy := &agentgatewayapi.AgentgatewayPolicy{
 				ObjectMeta: metav1.ObjectMeta{Name: "gateway-protector-" + httpbinRouteName, Namespace: httpbinNamespace},
 			}
-			err = wait.For(
+			err := wait.For(
 				conditions.New(cfg.Client().Resources()).ResourceMatch(agwPolicy, func(obj k8s.Object) bool {
 					_, ok := obj.(*agentgatewayapi.AgentgatewayPolicy)
 

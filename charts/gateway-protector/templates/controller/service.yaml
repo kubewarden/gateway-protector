@@ -14,3 +14,24 @@ spec:
   selector:
     {{- include "gateway-protector.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: controller
+---
+apiVersion: v1
+kind: Service
+metadata:
+  # The name is deliberately fixed rather than derived from the Helm
+  # release: the processor Deployment's --config-server-address points at
+  # this Service by name (see processor/deployment.yaml), exactly like the
+  # hardcoded processor Service name it dials in the other direction.
+  name: gateway-protector-controller-config-stream
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  ports:
+  - name: grpc
+    port: 9002
+    targetPort: 9002
+  selector:
+    {{- include "gateway-protector.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller

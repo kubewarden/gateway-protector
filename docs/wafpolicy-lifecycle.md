@@ -230,12 +230,10 @@ them accordingly:
    match (skipping `RegularExpression` matches, which the processor's
    prefix-based table cannot represent) - see `docs/policy-attachment.md`
    for the exact precedence, fallback order, and documented limitations.
-5. **Publish** the result (`ConfigPublisher`; `ConfigMapPublisher` is the
-   only implementation today) by creating/updating a ConfigMap this
-   controller owns (name: `controller.ProcessorConfigMapName`, currently
-   `gateway-protector-processor-config`, in the controller's own namespace),
-   which the processor Deployment mounts and hot-reloads from (see
-   `docs/processor.md`).
+5. **Publish** the result (`ConfigPublisher`; `GRPCPublisher` is the only
+   implementation today) by handing it to `ConfigServer`, which pushes it over
+   a long-lived gRPC stream to every processor replica currently subscribed
+   (see `docs/processor.md`'s "Config stream" section).
 6. **Converge the gateway wiring**: one generated `AgentgatewayPolicy` per
    protected route, applied/garbage-collected in the same pass - see
    [Gateway wiring](#4-gateway-wiring-implemented).
@@ -249,19 +247,20 @@ Because this reconciler is a singleton watching `WAFPolicy`, `WAFRuleSet`,
 `Gateway`, `HTTPRoute`, and managed `AgentgatewayPolicy` events (any of
 which can change what the config or wiring should contain), any relevant
 change re-triggers the *entire* rebuild, not
-just the changed object's slice of it. It also primes the processor's
-ConfigMap once at startup (even before any `WAFPolicy` exists), so a fresh
-install always starts with a valid, inert config instead of a missing
-ConfigMap.
+just the changed object's slice of it. It also primes the config stream
+once at startup (even before any `WAFPolicy` exists), so a fresh install
+always starts with a valid, inert config ready to push to the first
+processor that subscribes.
 
-**Known limitation:** with ConfigMap + inotify-reload distribution, there is
-no acknowledgment from the processor that a published config was actually
-compiled and is live - `Programmed=True` means "published", and the engine
-typically becomes live within the processor's reload latency (well under a
-second in practice, see `docs/processor.md`'s "Hot reload"), not
-synchronously with the condition update. A future gRPC config stream (see
-the project's design notes) would let `Programmed=True` mean a real,
-per-replica compiled acknowledgment instead.
+**Known limitation:** the config stream gives the controller a per-replica
+`ConfigAck` (`ConfigServer` logs every one it receives - see
+`docs/processor.md`'s "Config stream" section), but that ack isn't
+aggregated back onto `WAFPolicy` status yet - `Programmed=True` means
+"published to `ConfigServer`", and each subscribed replica typically applies
+it within the round-trip of a single gRPC message, not synchronously with
+the condition update. Surfacing per-replica ack failures onto `Programmed`
+is a natural follow-up once multiple processor replicas are common enough
+to make partial-rollout visibility matter.
 
 **Scalability:** rebuilding the config touches every accepted policy and
 every `HTTPRoute`, so keeping each rebuild cheap matters once either grows
@@ -421,6 +420,6 @@ without needing `-o yaml`.
 | `Accepted` never turns `True`                         | `TargetNotFound`, `Invalid`, or `Conflicted` — check `status.conditions[].message` | See the reference table above for the matching reason.                                     |
 | Two policies for the same route, only one is `Accepted` | Expected: conflict resolution picked the older one | Not a bug — remove the redundant policy or repoint it at a different attachment point.     |
 | A route-level policy isn't overriding the Gateway default | `targetRef` doesn't actually match the route (wrong `namespace`/`name`/`sectionName`), or it targets the Gateway again instead of the `HTTPRoute` | Verify `spec.targetRef.kind` is `HTTPRoute` and every field matches the intended route exactly. |
-| `Programmed` stays `False/Pending` even though `Accepted=True` | `ProcessorConfigReconciler` hasn't run yet (should be within moments - it watches `WAFPolicy` changes) or is failing to publish (check its logs and RBAC on the processor's ConfigMap). | Check the controller's logs for `processor-config` reconcile errors.                       |
+| `Programmed` stays `False/Pending` even though `Accepted=True` | `ProcessorConfigReconciler` hasn't run yet (should be within moments - it watches `WAFPolicy` changes) or is failing to publish (check its logs). | Check the controller's logs for `processor-config` reconcile errors.                       |
 | `Programmed=False/CompileFailed`                      | The policy's composed directives don't compile - almost always a malformed custom `SecRule` in a referenced `WAFRuleSet`. | Read the condition message (the Coraza compiler error) and fix the offending `WAFRuleSet.spec.rules[].directive`. |
-| The processor doesn't seem to be enforcing a policy that shows `Programmed=True` | The processor hasn't picked up the new ConfigMap yet (kubelet sync + inotify reload latency, typically well under a second - see `docs/processor.md`'s "Hot reload"), the route's generated `AgentgatewayPolicy` hasn't been applied yet (see [§4](#4-gateway-wiring-implemented)), or a user-authored Gateway-level `AgentgatewayPolicy` with `strategy.inheritance: Override` is locking `extProc` (see §4's caveats). | Check the processor's logs for a "Reloaded processor config" line, and `kubectl get agentgatewaypolicies -n <route namespace>` for the generated wiring object. |
+| The processor doesn't seem to be enforcing a policy that shows `Programmed=True` | The processor hasn't applied the new config yet (config stream round-trip latency, typically well under a second - see `docs/processor.md`'s "Config stream"), the route's generated `AgentgatewayPolicy` hasn't been applied yet (see [§4](#4-gateway-wiring-implemented)), or a user-authored Gateway-level `AgentgatewayPolicy` with `strategy.inheritance: Override` is locking `extProc` (see §4's caveats). | Check the processor's logs for an "Applied config from controller" line, the controller's logs for a matching `ConfigAck`, and `kubectl get agentgatewaypolicies -n <route namespace>` for the generated wiring object. |

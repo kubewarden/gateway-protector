@@ -20,9 +20,9 @@ import (
 )
 
 // engineKeyLength is the number of hex characters (from a sha256 digest)
-// used as an engine key: short enough to stay readable in logs/ConfigMap
-// diffs, long enough that an accidental collision between two genuinely
-// different directive blocks is not a practical concern.
+// used as an engine key: short enough to stay readable in logs, long
+// enough that an accidental collision between two genuinely different
+// directive blocks is not a practical concern.
 const engineKeyLength = 16
 
 // offEngineDirectives is the directive block rendered for a WAFPolicy with

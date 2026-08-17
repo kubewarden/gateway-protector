@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	envoy_service_ext_proc_v3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -28,10 +29,11 @@ func main() {
 
 // Config holds the processor's command-line configuration.
 type Config struct {
-	GRPCBindAddress  string
-	ConfigPath       string
-	LogLevel         string
-	EnableReflection bool
+	GRPCBindAddress     string
+	ConfigServerAddress string
+	SubscriberID        string
+	LogLevel            string
+	EnableReflection    bool
 }
 
 // parseFlags binds and parses the processor's command-line flags into a
@@ -40,11 +42,20 @@ func parseFlags() Config {
 	var cfg Config
 
 	flag.StringVar(&cfg.GRPCBindAddress, "grpc-bind-address", ":9000", "The address the ext_proc gRPC service binds to.")
-	flag.StringVar(&cfg.ConfigPath, "config", "/etc/gateway-protector/processor/config.yaml",
-		"Path to the processor's data-plane config file (engines + host/path routing table).")
+	flag.StringVar(&cfg.ConfigServerAddress, "config-server-address", "",
+		"The controller's config stream gRPC address (host:port) this processor subscribes its data-plane "+
+			"config (engines + host/path routing table) from. Required.")
+	flag.StringVar(&cfg.SubscriberID, "subscriber-id", "", "Identifies this replica to the controller's config "+
+		"stream logs/metrics (e.g. this pod's name). Defaults to the hostname if unset.")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level: debug, info, warn, or error.")
 	flag.BoolVar(&cfg.EnableReflection, "grpc-reflection", false, "Enable gRPC server reflection (useful for local debugging).")
 	flag.Parse()
+
+	if cfg.SubscriberID == "" {
+		if hostname, err := os.Hostname(); err == nil {
+			cfg.SubscriberID = hostname
+		}
+	}
 
 	return cfg
 }
@@ -56,23 +67,15 @@ func run() int {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLogLevel(cfg.LogLevel)}))
 
+	if cfg.ConfigServerAddress == "" {
+		logger.Error("--config-server-address is required")
+		return 1
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	watcher, err := config.NewWatcher(cfg.ConfigPath, logger)
-	if err != nil {
-		logger.ErrorContext(ctx, "Failed to set up processor config watcher", slog.String("path", cfg.ConfigPath), slog.Any("error", err))
-		return 1
-	}
-	defer watcher.Close()
-
-	initial, err := watcher.LoadInitial()
-	if err != nil {
-		logger.ErrorContext(ctx, "Failed to load initial processor config", slog.String("path", cfg.ConfigPath), slog.Any("error", err))
-		return 1
-	}
-
-	proc := processor.New(initial, logger)
+	proc := processor.New(nil, logger)
 
 	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.GRPCBindAddress)
 	if err != nil {
@@ -85,14 +88,32 @@ func run() int {
 	envoy_service_ext_proc_v3.RegisterExternalProcessorServer(grpcServer, proc)
 
 	healthServer := health.NewServer()
-	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	// NOT_SERVING until the first config is applied (see onChange below):
+	// a processor with no config loaded should not be marked ready, since
+	// Process would otherwise fail open (skip the WAF) for every request
+	// it receives in the meantime - see internal/processor.Server.
+	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
 
 	if cfg.EnableReflection {
 		reflection.Register(grpcServer)
 	}
 
-	go watcher.Start(ctx, proc.SetSnapshot)
+	var readyOnce sync.Once
+	onChange := func(snapshot *config.Snapshot) {
+		proc.SetSnapshot(snapshot)
+		readyOnce.Do(func() {
+			logger.InfoContext(ctx, "Received initial config from controller, marking processor ready")
+			healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+		})
+	}
+
+	subscriber := config.NewSubscriber(cfg.ConfigServerAddress, cfg.SubscriberID, logger)
+	go func() {
+		if err := subscriber.Run(ctx, onChange); err != nil {
+			logger.ErrorContext(ctx, "Config stream subscriber stopped", slog.Any("error", err))
+		}
+	}()
 
 	go func() {
 		sigChan := make(chan os.Signal, 1)
@@ -107,7 +128,7 @@ func run() int {
 
 	logger.InfoContext(ctx, "Processor ready",
 		slog.String("grpc-bind-address", cfg.GRPCBindAddress),
-		slog.String("config", cfg.ConfigPath),
+		slog.String("config-server-address", cfg.ConfigServerAddress),
 		slog.String("crs-version", config.EmbeddedCRSVersion()))
 	if err := grpcServer.Serve(lis); err != nil {
 		logger.ErrorContext(ctx, "gRPC server failed", slog.Any("error", err))

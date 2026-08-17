@@ -76,7 +76,6 @@ type ProcessorConfigReconciler struct {
 // +kubebuilder:rbac:groups=gateway-protector.kubewarden.io,resources=wafpolicies/status,verbs=get;update;patch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=gateway-protector.kubewarden.io,resources=wafrulesets,verbs=get;list;watch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;httproutes,verbs=get;list;watch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=agentgateway.dev,resources=agentgatewaypolicies,verbs=get;list;watch;create;update;patch;delete,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 
 // Reconcile rebuilds the processor's data-plane config from every
@@ -265,12 +264,12 @@ func (r *ProcessorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// primeCh feeds a single synthetic event into this controller's own
 	// workqueue once the manager's cache has synced, so the very first
 	// reconcile - which must run even with zero
-	// WAFPolicy/WAFRuleSet/Gateway/HTTPRoute objects, so the processor's
-	// ConfigMap gets its inert default - is triggered through the exact
-	// same serialized queue as every watch-driven reconcile, rather than
-	// calling Reconcile directly (which could then run concurrently with a
-	// queue-driven reconcile of the very same singleton key - e.g. both
-	// racing to create the same ConfigMap on a fresh install).
+	// WAFPolicy/WAFRuleSet/Gateway/HTTPRoute objects, so the processor
+	// config stream has its inert default to push as soon as a processor
+	// subscribes - is triggered through the exact same serialized queue as
+	// every watch-driven reconcile, rather than calling Reconcile directly
+	// (which could then run concurrently with a queue-driven reconcile of
+	// the very same singleton key).
 	primeCh := make(chan event.GenericEvent, 1)
 
 	err := ctrl.NewControllerManagedBy(mgr).
@@ -279,10 +278,10 @@ func (r *ProcessorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// default, and even more workers could never run the single
 		// processorConfigSingletonKey concurrently (a workqueue never
 		// hands the same key to two workers at once). Set explicitly
-		// anyway: this reconciler's correctness (e.g. the
-		// create-vs-create ConfigMap race the priming design below
-		// avoids) assumes serialized reconciles, and that intent should
-		// survive any future refactor of this setup.
+		// anyway: this reconciler's correctness (serialized publishes to
+		// GRPCPublisher/ConfigServer, and the priming design below)
+		// assumes serialized reconciles, and that intent should survive
+		// any future refactor of this setup.
 		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		WatchesRawSource(source.Channel(primeCh, handler.EnqueueRequestsFromMapFunc(enqueueProcessorConfig))).
 		Watches(&gwpv1alpha1.WAFPolicy{}, handler.EnqueueRequestsFromMapFunc(enqueueProcessorConfig),

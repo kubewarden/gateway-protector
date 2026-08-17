@@ -2,6 +2,7 @@ package processorconfig
 
 import (
 	"fmt"
+	"sort"
 
 	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -92,6 +93,18 @@ func CorazaDryCompile(engineKey, directives string) error {
 // compile is reported via its PolicyResult.Err and simply excluded from the
 // returned Config - and from covering any route or producing any wiring -
 // rather than failing the whole build (see docs/wafpolicy-lifecycle.md).
+//
+// Build's Config.Routes is canonically ordered (sorted by host, then
+// pathPrefix, then engine key) regardless of input.HTTPRoutes' own order:
+// that order follows the controller-runtime cache's List, which is
+// documented to be arbitrary (client-go's underlying store is map-backed),
+// so two Build calls over identical accepted-policy/route state could
+// otherwise render byte-different (but logically identical) Config values.
+// GRPCPublisher.Publish hashes the rendered JSON to decide whether a config
+// push is a no-op, so this ordering guarantee is what keeps that hash
+// stable across reconciles that didn't actually change anything - without
+// it, every reconcile could look like a "new" config and force every
+// processor replica to needlessly recompile all its engines.
 func Build(input Input, compile DryCompiler) BuildResult {
 	ruleSetIndex := indexRuleSets(input.RuleSets)
 	gatewayIndex := indexGateways(input.Gateways)
@@ -128,12 +141,40 @@ func Build(input Input, compile DryCompiler) BuildResult {
 	}
 
 	routes, wiring := buildRoutes(input.HTTPRoutes, policyIdx, gatewayIndex, engineKeyByPolicy, resultByPolicy)
+	sortRoutes(routes)
 
 	return BuildResult{
 		Config:        &procconfig.Config{Directives: directives, Routes: routes},
 		PolicyResults: results,
 		Wiring:        wiring,
 	}
+}
+
+// sortRoutes sorts routes in place by (Host, PathPrefix, engine key), the
+// canonical order Build's doc comment documents as an invariant. Route's
+// only fields are Host, PathPrefix, and WAF.EngineKey, so two routes that
+// compare equal on all three are indistinguishable - a plain (non-stable)
+// sort is enough.
+func sortRoutes(routes []procconfig.Route) {
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].Host != routes[j].Host {
+			return routes[i].Host < routes[j].Host
+		}
+		if routes[i].PathPrefix != routes[j].PathPrefix {
+			return routes[i].PathPrefix < routes[j].PathPrefix
+		}
+		return routeEngineKey(routes[i]) < routeEngineKey(routes[j])
+	})
+}
+
+// routeEngineKey returns route's engine key, or "" if it has no WAF engine
+// attached (see procconfig.Route.WAF's doc comment).
+func routeEngineKey(route procconfig.Route) string {
+	if route.WAF == nil {
+		return ""
+	}
+
+	return route.WAF.EngineKey
 }
 
 func buildRoutes(

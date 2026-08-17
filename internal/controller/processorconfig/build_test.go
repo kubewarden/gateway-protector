@@ -1,6 +1,7 @@
 package processorconfig
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -256,4 +257,85 @@ func TestBuildAcceptedPolicyWithNoCoverageStillCompiles(t *testing.T) {
 func TestCorazaDryCompile(t *testing.T) {
 	require.NoError(t, CorazaDryCompile("valid", "SecRuleEngine On\n"))
 	assert.Error(t, CorazaDryCompile("invalid", "ThisIsNotADirective\n"))
+}
+
+// TestBuildConfigIsDeterministic asserts Build's documented invariant that
+// its Config output only depends on the *logical* input, not the order
+// input.Policies/input.HTTPRoutes happen to be in - which, in production,
+// follows the controller-runtime cache's List and is explicitly
+// undocumented/arbitrary (see Build's own doc comment). GRPCPublisher hashes
+// the JSON encoding of this Config to detect no-op pushes, so if this test
+// ever fails, that hash would flap on every reconcile even when nothing
+// meaningful changed, forcing every processor replica to needlessly
+// recompile all its engines.
+func TestBuildConfigIsDeterministic(t *testing.T) {
+	newScenario := func(order []int) Input {
+		gateways := []string{"gw-a", "gw-b", "gw-c"}
+		modes := []gwpv1alpha1.WAFEngineMode{
+			gwpv1alpha1.WAFEngineModeBlocking,
+			gwpv1alpha1.WAFEngineModeDetection,
+			gwpv1alpha1.WAFEngineModeOff,
+		}
+		hosts := []string{"a.example.com", "b.example.com", "c.example.com"}
+
+		policies := make([]*gwpv1alpha1.WAFPolicy, 3)
+		routes := make([]*gatewayv1.HTTPRoute, 3)
+
+		for _, i := range order {
+			policy := newPolicy(gateways[i], gatewayTargetRef("infra", gateways[i], nil))
+			policy.Spec.Engine.Mode = modes[i]
+			policies[i] = policy
+
+			routes[i] = &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Name: gateways[i] + "-route", Namespace: "team-shop"},
+				Spec: gatewayv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayv1.CommonRouteSpec{
+						ParentRefs: []gatewayv1.ParentReference{
+							{Name: gatewayv1.ObjectName(gateways[i]), Namespace: new(gatewayv1.Namespace("infra"))},
+						},
+					},
+					Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(hosts[i])},
+					Rules: []gatewayv1.HTTPRouteRule{
+						{Matches: []gatewayv1.HTTPRouteMatch{{Path: &gatewayv1.HTTPPathMatch{Value: new("/")}}}},
+					},
+				},
+			}
+		}
+
+		// Reorder the built slices themselves (not just the construction
+		// loop above) so both Policies and HTTPRoutes are actually handed
+		// to Build in `order`, mirroring an arbitrarily-ordered cache List.
+		orderedPolicies := make([]*gwpv1alpha1.WAFPolicy, 3)
+		orderedRoutes := make([]*gatewayv1.HTTPRoute, 3)
+		for pos, i := range order {
+			orderedPolicies[pos] = policies[i]
+			orderedRoutes[pos] = routes[i]
+		}
+
+		return Input{Policies: orderedPolicies, HTTPRoutes: orderedRoutes}
+	}
+
+	forward := Build(newScenario([]int{0, 1, 2}), alwaysCompiles)
+	reversed := Build(newScenario([]int{2, 1, 0}), alwaysCompiles)
+	shuffled := Build(newScenario([]int{1, 2, 0}), alwaysCompiles)
+
+	require.Len(t, forward.Config.Routes, 3)
+
+	forwardJSON, err := json.Marshal(forward.Config)
+	require.NoError(t, err)
+	reversedJSON, err := json.Marshal(reversed.Config)
+	require.NoError(t, err)
+	shuffledJSON, err := json.Marshal(shuffled.Config)
+	require.NoError(t, err)
+
+	// Byte-exact comparison is intentional here, not just JSON-semantic
+	// equality (which is all assert.JSONEq would check): what actually
+	// needs to be stable is the sha256 hash GRPCPublisher computes over
+	// these exact bytes (see its doc comment), so this test's whole point
+	// would be undermined by an equality check that tolerates the kind of
+	// difference (e.g. array order) that would also change that hash.
+	assert.Equal(t, string(forwardJSON), string(reversedJSON), //nolint:testifylint // see comment above: byte-exact equality is the point of this test
+		"Build's Config must serialize identically regardless of input order")
+	assert.Equal(t, string(forwardJSON), string(shuffledJSON), //nolint:testifylint // see comment above: byte-exact equality is the point of this test
+		"Build's Config must serialize identically regardless of input order")
 }

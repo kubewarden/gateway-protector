@@ -2,88 +2,73 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
-	"gopkg.in/yaml.v3"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
+	configstreamv1 "github.com/kubewarden/gateway-protector/internal/configstream/v1"
 	procconfig "github.com/kubewarden/gateway-protector/internal/processor/config"
 )
 
-// ProcessorConfigMapName is the name of the ConfigMap the controller
-// publishes the processor's data-plane configuration to. It is
-// deliberately a fixed name rather than something derived from the Helm
-// release: the controller owns exactly one processor config per
-// installation of this operator into a namespace, so there is nothing for
-// a user to configure here (unlike, say, the release name), and hardcoding
-// it means both this reconciler and the chart-rendered processor
-// Deployment (which mounts this same ConfigMap) can refer to it without
-// threading a value through Helm.
-const ProcessorConfigMapName = "gateway-protector-processor-config"
-
-// processorConfigMapDataKey is the key under ConfigMap.data holding the
-// YAML-encoded procconfig.Config - see docs/processor.md for the schema
-// and cmd/processor's --config flag, which points at this same key mounted
-// as a file.
-const processorConfigMapDataKey = "config.yaml"
-
 // ConfigPublisher hands the compiled processor configuration to the data
-// plane. ConfigMapPublisher is the only implementation today (ConfigMap +
-// the processor's own fsnotify watch - see
-// internal/processor/config.Watcher); a future gRPC config stream (see
-// docs, "production" distribution) would satisfy the same interface,
-// letting ProcessorConfigReconciler stay unchanged.
+// plane. GRPCPublisher is the only implementation: it feeds ConfigServer,
+// which pushes the config over the config stream (see
+// proto/configstream/v1) to every connected processor replica.
 type ConfigPublisher interface {
 	Publish(ctx context.Context, cfg *procconfig.Config) error
 }
 
-// ConfigMapPublisher publishes the processor configuration by
-// creating/updating a ConfigMap (name: ProcessorConfigMapName) in
-// Namespace - the same namespace this controller itself runs in, which is
-// also where the chart deploys the processor Deployment that mounts it.
-type ConfigMapPublisher struct {
-	Client    client.Client
-	Namespace string
+// GRPCPublisher publishes the processor configuration by handing it to a
+// ConfigServer, which pushes it to every currently connected processor
+// replica over the config stream and tracks each replica's ConfigAck (see
+// ConfigServer's doc comment).
+type GRPCPublisher struct {
+	Server *ConfigServer
 }
 
-var _ ConfigPublisher = &ConfigMapPublisher{}
+var _ ConfigPublisher = &GRPCPublisher{}
 
-// Publish renders cfg as YAML and creates/updates the ConfigMap, skipping
-// the API call entirely when the content is already up to date (see
-// controllerutil.CreateOrUpdate).
-func (p *ConfigMapPublisher) Publish(ctx context.Context, cfg *procconfig.Config) error {
-	data, err := yaml.Marshal(cfg)
+// Publish renders cfg as JSON - the same encoding both sides' config
+// package already parses/validates/compiles - and hands it to p.Server
+// alongside a sha256 hex digest that both sides use as the config's
+// version: to detect no-op pushes here, and to correlate a subscriber's
+// ConfigAck back to the snapshot it's acking.
+//
+// That hash is only meaningful if identical logical config always produces
+// identical bytes, which depends on two things holding together:
+//
+//   - cfg itself must be canonical: processorconfig.Build (the only
+//     producer of the Config this reconciler publishes) documents its
+//     output ordering (Routes sorted by host/pathPrefix/engineKey) as an
+//     invariant precisely so that rebuilding from the same accepted
+//     WAFPolicy/WAFRuleSet/Gateway/HTTPRoute set - regardless of the
+//     arbitrary iteration order the controller-runtime cache's List
+//     returns them in - never spuriously produces a "changed" config.
+//   - encoding/json's own marshaling must be deterministic, which it is:
+//     struct fields are always encoded in declaration order and map keys
+//     (Config.Directives here) are always sorted - see encoding/json's
+//     Marshal doc comment.
+//
+// There is deliberately no attempt to canonicalize the JSON bytes
+// themselves (e.g. RFC 8785/JCS): that guards against multiple independent
+// producers/serializers disagreeing on the same logical value, which
+// doesn't apply here - this Publish call is the only place the config is
+// ever serialized or hashed; every subscriber only ever echoes the version
+// string back in its ConfigAck, it never re-derives it (see
+// Subscriber.applySnapshot).
+func (p *GRPCPublisher) Publish(_ context.Context, cfg *procconfig.Config) error {
+	data, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal processor config: %w", err)
 	}
 
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ProcessorConfigMapName,
-			Namespace: p.Namespace,
-		},
-	}
+	version := sha256.Sum256(data)
 
-	result, err := controllerutil.CreateOrUpdate(ctx, p.Client, cm, func() error {
-		if cm.Data == nil {
-			cm.Data = make(map[string]string, 1)
-		}
-
-		cm.Data[processorConfigMapDataKey] = string(data)
-
-		return nil
+	p.Server.Publish(&configstreamv1.ConfigSnapshot{
+		Version:    hex.EncodeToString(version[:]),
+		ConfigJson: data,
 	})
-	if err != nil {
-		return fmt.Errorf("failed to create/update ConfigMap %s/%s: %w", p.Namespace, ProcessorConfigMapName, err)
-	}
-
-	if result != controllerutil.OperationResultNone {
-		logf.FromContext(ctx).Info("Published processor config", "configMap", ProcessorConfigMapName, "operation", result)
-	}
 
 	return nil
 }

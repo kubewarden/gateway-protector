@@ -57,15 +57,14 @@ func init() {
 }
 
 // podNamespace resolves the namespace this controller itself is running
-// in - where ProcessorConfigMapName is published, alongside the processor
-// Deployment that mounts it - from the POD_NAMESPACE downward-API env var
-// the chart sets on the controller Deployment.
+// in - where the processor Deployment/Service that its generated
+// AgentgatewayPolicy objects reference lives - from the POD_NAMESPACE
+// downward-API env var the chart sets on the controller Deployment.
 func podNamespace() (string, error) {
 	ns := os.Getenv("POD_NAMESPACE")
 	if ns == "" {
 		return "", errors.New("POD_NAMESPACE environment variable is not set or empty; it is required " +
-			"to determine where to publish the processor config ConfigMap (set via the downward API " +
-			"by the Helm chart)")
+			"to determine the processor's namespace (set via the downward API by the Helm chart)")
 	}
 
 	return ns, nil
@@ -76,12 +75,15 @@ func main() {
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var enableLeaderElection bool
 	var probeAddr string
+	var configStreamBindAddress string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&configStreamBindAddress, "config-stream-bind-address", ":9002",
+		"The address the processor config stream's gRPC service binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -189,13 +191,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	configServer := controller.NewConfigServer()
+	if err := mgr.Add(&controller.ConfigStreamRunnable{
+		Server:      configServer,
+		BindAddress: configStreamBindAddress,
+	}); err != nil {
+		setupLog.Error(err, "Failed to add the processor config stream server")
+		os.Exit(1)
+	}
+
 	if err := (&controller.ProcessorConfigReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Publisher: &controller.ConfigMapPublisher{
-			Client:    mgr.GetClient(),
-			Namespace: namespace,
-		},
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		Publisher:          &controller.GRPCPublisher{Server: configServer},
 		ProcessorNamespace: namespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "processor-config")

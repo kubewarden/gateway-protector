@@ -6,28 +6,32 @@ single bidirectional gRPC stream that spans all four processing phases (request 
 body, response headers, response body), so a single process can run WAF (request-phase allow/block)
 and, eventually, DLP (response-phase redact/mask/block) with one network hop instead of two.
 
-The processor has no Kubernetes API dependency: it is configured entirely by a local YAML file (see
-[Configuration](#configuration) below) and knows nothing about `WAFPolicy`/
-`WAFRuleSet` objects. The controller renders that config file from those objects and publishes it to
-a ConfigMap it owns (see `internal/controller/processorconfig` and `internal/controller/processor_config_reconciler.go`), which the chart-installed processor Deployment mounts - see
-[Deployment](#deployment).
+The processor has no Kubernetes API dependency: it is configured entirely over the config stream
+(see [Config stream](#config-stream) below) and knows nothing about `WAFPolicy`/`WAFRuleSet`
+objects. The controller renders that config from those objects and pushes it to every processor
+replica over a gRPC stream it serves (see `internal/controller/processorconfig` and
+`internal/controller/processor_config_reconciler.go`).
 
 ## Command-line flags
 
-| Flag                    | Default                                             | Description                                                              |
-| ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------- |
-| `--grpc-bind-address`   | `:9000`                                             | Address the ext_proc gRPC service binds to.                              |
-| `--config`              | `/etc/gateway-protector/processor/config.yaml`      | Path to the data-plane config file described below.                     |
-| `--log-level`           | `info`                                              | One of `debug`, `info`, `warn`, `error`.                                 |
-| `--grpc-reflection`     | `false`                                             | Enable gRPC server reflection (local debugging only).                   |
+| Flag                        | Default | Description                                                                                             |
+| ---------------------------- | --------- | ----------------------------------------------------------------------------------------------------------- |
+| `--grpc-bind-address`       | `:9000` | Address the ext_proc gRPC service binds to.                                                             |
+| `--config-server-address`   | (none, required) | The controller's config stream gRPC address (host:port) - see [Config stream](#config-stream). |
+| `--subscriber-id`           | the hostname | Identifies this replica to the controller's config stream logs/metrics (e.g. this pod's name).     |
+| `--log-level`               | `info`  | One of `debug`, `info`, `warn`, `error`.                                                                 |
+| `--grpc-reflection`         | `false` | Enable gRPC server reflection (local debugging only).                                                   |
 
 A gRPC health service (`grpc.health.v1.Health`) is always registered, so `kubectl` and Kubernetes'
-native gRPC probes can check readiness/liveness on the same port without a separate HTTP port.
+native gRPC probes can check readiness/liveness on the same port without a separate HTTP port - see
+[Config stream](#config-stream) for how readiness is tied to having received a first config.
 
 ## Configuration
 
-The config file (see `internal/processor/config/types.go` for the authoritative Go types) has two
-top-level keys:
+The config (see `internal/processor/config/types.go` for the authoritative Go types, and
+[Config stream](#config-stream) for how it's delivered) is canonical JSON with two top-level keys.
+The example below uses YAML purely for readability in this document; the wire format is JSON, not
+YAML:
 
 ```yaml
 # directives maps an opaque "engine key" to a block of raw Coraza/SecLang directives. Each entry is
@@ -100,6 +104,9 @@ threaded through as separate processor-level settings.
 
 ### Example
 
+Again shown as YAML for readability (comments); the actual wire format is JSON (see
+[Config stream](#config-stream)):
+
 ```yaml
 directives:
   shop-strict: |
@@ -154,47 +161,55 @@ request/response entirely (the client gets this response directly, nothing is fo
 upstream), with the interruption's status code (or 403 if unset), a `content-type: text/plain` body
 describing the matched rule ID/action, and an `x-waf-violation: 1` header.
 
-## Hot reload
+## Config stream
 
-The processor watches its config file for changes using inotify (`github.com/fsnotify/fsnotify`), and
-recompiles + swaps in a new in-memory `Snapshot` (engines + routing table) whenever the content
-actually changes (see `internal/processor/config/loader.go`).
+The processor receives its data-plane config (engines + routing table) from the controller over a
+long-lived gRPC stream (`proto/configstream/v1/config_stream.proto`,
+`internal/processor/config.Subscriber`), not from a file: the processor dials the controller's
+`ConfigServer` (`internal/controller.ConfigServer`) once at startup and keeps that single stream open
+for its whole lifetime, reconnecting with backoff on any error.
 
-- It watches the file's **parent directory**, not the file itself. This is required for Kubernetes
-  ConfigMap volume mounts: kubelet updates a mounted ConfigMap by writing the new content under a
-  new `..data_<timestamp>` directory and atomically repointing the `..data` symlink (and the
-  mounted file itself) at it. A watch on the original file's inode would never observe that swap; a
-  watch on the directory does.
-- A sha256 content hash gates every reload, so the inevitable duplicate/spurious inotify events
-  (writes, chmods, the ConfigMap symlink dance) never trigger a wasted recompile.
-- **Fail-safe by default**: if the file becomes unreadable, fails to parse, fails semantic
-  validation, or fails to compile into Coraza engines, the error is logged and the *previous*
-  compiled `Snapshot` keeps serving traffic untouched. A bad reload can never silently disable
-  protection or crash the data plane.
-
-**Known limitation:** Coraza memoizes compiled regex/aho-corasick patterns in a process-wide cache by
-default. When a `Snapshot` is superseded, its old `coraza.WAF` engines are simply dropped/garbage
-collected today; that cache is not explicitly released (`coraza/v3`'s `experimental.WAFCloser` isn't
-wired up yet). On a processor that reloads configuration very frequently this is a slow memory leak,
-not a correctness bug - worth revisiting before recommending frequent reloads in production.
+- The controller pushes the current config immediately on subscribe, and again every time
+  `WAFPolicy`/`WAFRuleSet` changes cause `ProcessorConfigReconciler` to publish a new one (see
+  `internal/controller.GRPCPublisher`). The push payload (`ConfigSnapshot.config_json`) is the
+  canonical JSON encoding of `internal/processor/config.Config` - not proto messages, since both
+  sides already share the same Go schema and parse/validate/compile pipeline; encoding it as opaque
+  bytes avoids a redundant proto-message duplicate of that schema. Each push also carries a sha256
+  hex digest of those bytes as its `version`, letting both sides skip no-op pushes/reloads - stable
+  across reconciles because `processorconfig.Build` documents its `Routes` ordering as canonical
+  (sorted, not the cache's arbitrary iteration order) and `encoding/json.Marshal` is itself
+  deterministic (sorted map keys, declaration-order struct fields).
+- After receiving a config, the processor parses, validates, and compiles it, then sends a
+  `ConfigAck` back reporting whether it applied successfully - the controller knows whether a given
+  replica is actually running the config it was sent (see `ConfigServer`'s ack logging).
+- **Fail-safe by default**: if a pushed config fails to parse, fails semantic validation, or fails to
+  compile into Coraza engines, the processor logs the error, reports it back in a rejected
+  `ConfigAck`, and keeps serving whatever `Snapshot` it had before (or none, if this was its first
+  config). A bad push can never silently disable protection or crash the data plane.
+- **Readiness**: the processor's gRPC health service reports `NOT_SERVING` until it has applied its
+  first config, so Kubernetes doesn't route traffic to a pod with nothing loaded yet; it flips to
+  `SERVING` on the first successful `ConfigAck` and never flips back for later config errors (those
+  keep serving the last-known-good config instead, per the fail-safe behavior above).
+- With leader election (the chart's default), only the active controller replica's `ConfigServer`
+  ever has a config to push - see `internal/controller.ConfigStreamRunnable`. A processor connected
+  to a standby replica simply finds the config stream unavailable and reconnects with backoff until
+  a leader is serving again; multi-replica controller HA beyond this hasn't been exercised.
 
 ## Deployment
 
 `charts/gateway-protector/templates/processor/`:
 
-- `deployment.yaml` — mounts the config as a ConfigMap volume at
-  `/etc/gateway-protector/processor/`; liveness/readiness use Kubernetes' native gRPC probe support
-  against the health service above.
-- `service.yaml` — a `ClusterIP` Service on port `9000`. This is the `backendRef` a future
-  `AgentgatewayPolicy` (generated by the controller) will point `ext_proc` traffic at.
+- `deployment.yaml` — passes `--config-server-address` pointing at the controller's config stream
+  Service (see below); liveness/readiness use Kubernetes' native gRPC probe support against the
+  health service above.
+- `service.yaml` — a `ClusterIP` Service on port `9000`. This is the `backendRef` every generated
+  `AgentgatewayPolicy` points `ext_proc` traffic at (see `internal/controller/processor_config_wiring.go`).
 
-The ConfigMap itself (name: `controller.ProcessorConfigMapName`, currently
-`gateway-protector-processor-config`) is **not** rendered by this chart: the controller owns it,
-creating/updating it from `WAFPolicy`/`WAFRuleSet` objects (see
-`internal/controller/processor_config_reconciler.go`) in its own namespace - the same namespace the
-processor Deployment above runs in. A fresh install with no `WAFPolicy` objects yet still starts
-cleanly: the controller publishes an inert default (a single `SecRuleEngine Off` engine, zero
-routes) as soon as it starts, before any `WAFPolicy` needs to exist.
+The controller's config stream is served from its own `ConfigStreamRunnable`
+(`internal/controller/configstream_runnable.go`), exposed by `charts/gateway-protector/templates/controller/service.yaml`
+as the fixed-name `gateway-protector-controller-config-stream` Service on port `9002` - fixed for the
+same reason as the processor's own Service name: the processor Deployment's `--config-server-address`
+needs a name to dial that doesn't depend on the Helm release name.
 
 ## Current limitations / roadmap
 
@@ -202,8 +217,15 @@ routes) as soon as it starts, before any `WAFPolicy` needs to exist.
   redaction, masking, or response-body mutation yet.
 - **No WebSocket-specific handling** - a long-lived upgraded connection is just a single ext_proc
   stream/Coraza transaction like any other request; there's no dedicated state machine for it.
-- **Config distribution is ConfigMap + watch (MVP)** - a future gRPC config stream (see the design
-  notes) would let the controller receive an ack once the processor has actually compiled and
-  applied a new config, instead of the fire-and-forget ConfigMap write used today.
-- **No mTLS** between agentgateway and the processor yet.
-- **No `WAFCloser` cleanup on reload** (see "Hot reload" above).
+- **No mTLS** between agentgateway and the processor, or between the processor and the controller's
+  config stream, yet.
+- **No `WAFCloser` cleanup on reload** - Coraza memoizes compiled regex/aho-corasick patterns in a
+  process-wide cache by default. When a `Snapshot` is superseded, its old `coraza.WAF` engines are
+  simply dropped/garbage collected today; that cache is not explicitly released (`coraza/v3`'s
+  `experimental.WAFCloser` isn't wired up yet). On a processor that reloads configuration very
+  frequently this is a slow memory leak, not a correctness bug - worth revisiting before
+  recommending frequent reloads in production, especially now that config pushes are cheap and
+  immediate.
+- **Config stream acks aren't surfaced to `WAFPolicy` status** - `ConfigServer` logs every
+  `ConfigAck` (and a future metric), but a replica repeatedly rejecting a config isn't yet reflected
+  back onto the `WAFPolicy` objects that contributed to it.

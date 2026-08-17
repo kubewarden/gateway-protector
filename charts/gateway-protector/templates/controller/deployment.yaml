@@ -25,6 +25,7 @@ spec:
             - --leader-elect
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8443
+            - --config-stream-bind-address=:9002
           image: '{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}'
           imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
           name: controller
@@ -35,6 +36,9 @@ spec:
                   fieldPath: metadata.namespace
           securityContext:
             {{ include "gateway-protector.securityContext" . | nindent 12 }}
+          ports:
+            - name: config-stream
+              containerPort: 9002
           livenessProbe:
             httpGet:
               path: /healthz

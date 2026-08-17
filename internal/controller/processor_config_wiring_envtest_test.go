@@ -108,7 +108,7 @@ var _ = Describe("Gateway wiring (generated AgentgatewayPolicy)", func() {
 			extProc := wiringPolicy.Spec.Traffic.ExtProc
 			Expect(extProc).NotTo(BeNil())
 			Expect(extProc.BackendRef.Name).To(Equal(gatewayv1.ObjectName(ProcessorServiceName)))
-			Expect(*extProc.BackendRef.Namespace).To(Equal(gatewayv1.Namespace(processorConfigMapNamespace)))
+			Expect(*extProc.BackendRef.Namespace).To(Equal(gatewayv1.Namespace(processorNamespace)))
 			Expect(*extProc.BackendRef.Port).To(Equal(gatewayv1.PortNumber(ProcessorServicePort)))
 
 			options := extProc.ProcessingOptions

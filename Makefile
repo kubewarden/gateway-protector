@@ -2,10 +2,24 @@ CONTROLLER_TOOLS_VERSION := v0.21.0
 ENVTEST_VERSION := release-0.24
 ENVTEST_K8S_VERSION := 1.33.0
 HELM_VALUES_SCHEMA_JSON_VERSION := v2.3.1
+GOLANGCI_LINT_VERSION ?= v2.12.1
+BUF_VERSION ?= v1.72.0
 
 CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
 HELM_SCHEMA ?= go run github.com/losisin/helm-values-schema-json/v2@$(HELM_VALUES_SCHEMA_JSON_VERSION)
+
+## Location to install dependencies to. Declared this early (rather than in
+## the "##@ Dependencies" section below, where the rest of the tooling setup
+## lives) because GOLANGCI_LINT/BUF are used as prerequisites - not just
+## inside recipes - further down: unlike recipes, which Make expands lazily
+## at execution time, a rule's prerequisite list is expanded immediately as
+## the Makefile is read, so these variables must already be defined by the
+## time any earlier rule's prerequisite list references them, or that
+## reference silently expands to nothing.
+LOCALBIN ?= $(shell pwd)/bin
+GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+BUF = $(LOCALBIN)/buf-$(BUF_VERSION)
 
 GO_MOD_SRCS := go.mod go.sum
 GO_BUILD_ENV := CGO_ENABLED=0 GOOS=linux GOARCH=amd64
@@ -34,18 +48,24 @@ test-e2e: controller-image processor-image
 	$(GO_BUILD_ENV) go test ./test/e2e/ -v -timeout 30m
 
 .PHONY: fmt
-fmt:
+fmt: buf
 	$(GO_BUILD_ENV) go fmt ./...
+	$(BUF) format -w proto
 
-.PHOHY: lint
-lint: golangci-lint
+.PHONY: proto-lint
+proto-lint: buf ## Lint and check formatting of the config stream's proto definitions.
+	$(BUF) lint proto
+	$(BUF) format --exit-code -d proto
+
+.PHONY: lint
+lint: golangci-lint proto-lint
 	$(GO_BUILD_ENV) $(GOLANGCI_LINT) run --verbose
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	$(GO_BUILD_ENV) $(GOLANGCI_LINT) run --fix
 
-.PHOHY: vet
+.PHONY: vet
 vet:
 	$(GO_BUILD_ENV) go vet ./...
 
@@ -76,7 +96,7 @@ processor-image:
 	@echo "Built $(REGISTRY)/$(REPO)/processor:$(TAG)"
 
 .PHONY: generate
-generate: generate-controller generate-chart generate-docs
+generate: generate-controller generate-chart generate-docs generate-proto
 
 .PHONY: generate-controller
 generate-controller: manifests  ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -99,23 +119,47 @@ generate-docs: ## Generate API documentation for CRDs.
 generate-fixtures: ## Generate test fixtures.
 	$(GO_BUILD_ENV) go run ./hack/generate_fixtures.go ./test/fixtures
 
+PROTO_SRCS := proto/configstream/v1/config_stream.proto
+
+# PROTO_GEN_MAIN is the only one of buf generate's two output files
+# (config_stream_grpc.pb.go is the other) declared as this rule's target.
+# A real multi-output rule (GNU Make 4.3's "&:" grouped targets) would be
+# more precise, but 4.3 postdates several still-common Make versions
+# (macOS ships 3.81; Ubuntu 20.04/RHEL 8 ship 4.2.1) and degrades silently
+# on older ones: "&:" parses there as an ordinary rule with a stray literal
+# "&" target, so the recipe can run twice (once per stale target) or, under
+# `make -j`, twice concurrently - two buf processes racing to write the same
+# files, with no error at all. Tracking one representative output instead
+# works on any Make: both files are only ever written together by the same
+# invocation, so the one blind spot (deleting only the non-tracked file by
+# hand) is both unlikely and already caught by CI's generate-proto drift
+# check.
+PROTO_GEN_MAIN := internal/configstream/v1/config_stream.pb.go
+
+.PHONY: generate-proto
+generate-proto: $(PROTO_GEN_MAIN) ## Generate Go code from the config stream's proto definitions.
+
+$(PROTO_GEN_MAIN): $(PROTO_SRCS) buf.gen.yaml proto/buf.yaml $(BUF)
+	$(GO_BUILD_ENV) $(BUF) generate proto
+
+.PHONY: proto-breaking
+proto-breaking: buf ## Check the config stream's proto definitions for breaking changes against main. Run this locally before changing proto/configstream/v1/config_stream.proto; not run in CI (needs full git history).
+	$(BUF) breaking proto --against '.git#branch=main,subdir=proto'
+
 ##@ Dependencies
 
-## Location to install dependencies to
-LOCALBIN ?= $(shell pwd)/bin
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
-
-## Tool Binaries
-GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
-
-## Tool Versions
-GOLANGCI_LINT_VERSION ?= v2.12.1
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,${GOLANGCI_LINT_VERSION})
+
+.PHONY: buf
+buf: $(BUF) ## Download buf locally if necessary.
+$(BUF): $(LOCALBIN)
+	$(call go-install-tool,$(BUF),github.com/bufbuild/buf/cmd/buf,${BUF_VERSION})
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary (ideally with version)

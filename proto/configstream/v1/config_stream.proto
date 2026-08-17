@@ -1,0 +1,82 @@
+// Package configstream carries the processor's data-plane configuration
+// (see internal/processor/config.Config) from the controller to each
+// processor replica over a long-lived gRPC stream: the controller holds
+// the latest compiled config, pushes it to every connected subscriber (on
+// connect, and again on every change), and each subscriber acks whether it
+// applied the config successfully - giving the controller a per-replica
+// signal that a config was actually received and compiled by the data
+// plane.
+//
+// The payload is deliberately opaque bytes (canonical JSON - see
+// internal/controller.GRPCPublisher - encoding internal/processor/config.Config)
+// rather than a fully-typed proto message: the schema already lives in one
+// place (Go), and both sides already have the parse/validate/compile
+// pipeline in internal/processor/config. Duplicating that schema into proto
+// messages would just add a conversion layer with no benefit.
+syntax = "proto3";
+
+package configstream.v1;
+
+// ConfigStreamService is implemented by the controller. Processor replicas
+// dial it and open a single long-lived StreamConfig call for their whole
+// lifetime, reconnecting with their own backoff on any stream error.
+service ConfigStreamService {
+  // StreamConfig is a bidirectional stream: the subscriber (processor) sends
+  // exactly one Subscribe message followed by a ConfigAck after every
+  // ConfigSnapshot it receives; the controller sends a StreamConfigResponse
+  // carrying a ConfigSnapshot immediately upon subscribe (if one is already
+  // available) and again whenever the config changes. StreamConfigResponse
+  // is a wrapper rather than streaming ConfigSnapshot directly, so the
+  // server->client direction can grow new message kinds later (e.g. a drain
+  // notice) without a breaking change - mirroring the headroom
+  // StreamConfigRequest's own oneof already gives the client->server
+  // direction.
+  rpc StreamConfig(stream StreamConfigRequest) returns (stream StreamConfigResponse);
+}
+
+// StreamConfigRequest is a single message in the client->server direction of
+// the StreamConfig call.
+message StreamConfigRequest {
+  oneof message {
+    Subscribe subscribe = 1;
+    ConfigAck ack = 2;
+  }
+}
+
+// StreamConfigResponse is a single message in the server->client direction
+// of the StreamConfig call.
+message StreamConfigResponse {
+  ConfigSnapshot snapshot = 1;
+}
+
+// Subscribe must be the first message a subscriber sends on the stream. It
+// identifies the subscriber for the controller's logs/metrics; it carries no
+// data needed for correctness.
+message Subscribe {
+  // subscriber_id identifies the connecting processor replica, e.g. its pod
+  // name, for logging and metrics only.
+  string subscriber_id = 1;
+}
+
+// ConfigAck reports whether a subscriber applied a given ConfigSnapshot.
+message ConfigAck {
+  // version echoes the ConfigSnapshot.version this ack is for.
+  string version = 1;
+  // applied is true if the subscriber parsed, validated, and compiled the
+  // config successfully and is now serving traffic with it.
+  bool applied = 2;
+  // error describes why the config was rejected. Only set when applied is
+  // false. The subscriber keeps serving its previous config in that case
+  // (see internal/processor/config's fail-safe reload semantics).
+  string error = 3;
+}
+
+// ConfigSnapshot carries one version of the processor's data-plane config.
+message ConfigSnapshot {
+  // version is the sha256 hex digest of config_json, used by both sides to
+  // detect duplicate/no-op pushes and to correlate ConfigAck to a snapshot.
+  string version = 1;
+  // config_json is the canonical JSON encoding of
+  // internal/processor/config.Config.
+  bytes config_json = 2;
+}

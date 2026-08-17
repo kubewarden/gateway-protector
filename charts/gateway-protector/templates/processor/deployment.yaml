@@ -23,13 +23,19 @@ spec:
             - /processor
           args:
             - --grpc-bind-address=:9000
-            - --config=/etc/gateway-protector/processor/config.yaml
+            - --config-server-address=gateway-protector-controller-config-stream.{{ .Release.Namespace }}.svc:9002
+            - --subscriber-id=$(POD_NAME)
             {{- if .Values.processor.logLevel }}
             - --log-level={{ .Values.processor.logLevel }}
             {{- end }}
           image: '{{ .Values.processor.image.repository }}:{{ .Values.processor.image.tag }}'
           imagePullPolicy: {{ .Values.processor.image.pullPolicy }}
           name: processor
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           securityContext:
             {{ include "gateway-protector.securityContext" . | nindent 12 }}
           ports:
@@ -50,20 +56,9 @@ spec:
 {{ toYaml .Values.processor.resources | indent 12 }}
           {{- end }}
           volumeMounts:
-            - mountPath: "/etc/gateway-protector/processor"
-              name: config
-              readOnly: true
             - mountPath: "/tmp"
               name: tmp
       volumes:
-        - name: config
-          configMap:
-            # Hardcoded to match controller.ProcessorConfigMapName
-            # (internal/controller/processor_config_publisher.go): the
-            # controller - not this chart - owns this ConfigMap's content,
-            # generating it from WAFPolicy/WAFRuleSet objects, so its name
-            # is not templated off the release name.
-            name: gateway-protector-processor-config
         - name: tmp
           emptyDir: {}
       terminationGracePeriodSeconds: 10

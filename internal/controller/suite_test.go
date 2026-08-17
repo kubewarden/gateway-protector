@@ -33,11 +33,12 @@ import (
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
-// processorConfigMapNamespace is the namespace ProcessorConfigReconciler's
-// ConfigMapPublisher is configured with for this test suite (standing in
-// for the controller's own namespace, resolved from POD_NAMESPACE in
-// production - see cmd/controller/main.go's podNamespace).
-const processorConfigMapNamespace = "default"
+// processorNamespace stands in for the controller's own namespace (where
+// the processor Deployment/Service this suite's generated
+// AgentgatewayPolicy objects reference also live), resolved from
+// POD_NAMESPACE in production - see cmd/controller/main.go's
+// podNamespace.
+const processorNamespace = "default"
 
 var (
 	cancel    context.CancelFunc
@@ -46,12 +47,17 @@ var (
 	k8sClient client.Client
 	mgr       manager.Manager
 
+	// configServer is the ConfigServer this test suite's
+	// ProcessorConfigReconciler publishes through (see GRPCPublisher);
+	// it's the only implementation-detail this suite needs beyond
+	// publishedConfigs.
+	configServer *ConfigServer
+
 	// publishedConfigs records every processor config
 	// ProcessorConfigReconciler publishes during this test suite (see
 	// recordingPublisher), so specs can assert on what was published
-	// without coupling to how (ConfigMap today, possibly a future gRPC
-	// stream) - see processor_config_reconciler_test.go's
-	// publishedConfig.
+	// without coupling to how (a gRPC config stream - see
+	// processor_config_reconciler_test.go's publishedConfig).
 	publishedConfigs *recordingPublisher
 )
 
@@ -61,7 +67,7 @@ var (
 // to publish (routes, engine keys, directives) independently of the
 // transport, while still exercising and covering the real publisher (see
 // processor_config_reconciler_test.go for the one spec that does assert on
-// the ConfigMap transport itself).
+// the config stream transport itself).
 type recordingPublisher struct {
 	delegate ConfigPublisher
 
@@ -147,18 +153,16 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	configServer = NewConfigServer()
 	publishedConfigs = &recordingPublisher{
-		delegate: &ConfigMapPublisher{
-			Client:    mgr.GetClient(),
-			Namespace: processorConfigMapNamespace,
-		},
+		delegate: &GRPCPublisher{Server: configServer},
 	}
 
 	err = (&ProcessorConfigReconciler{
 		Client:             mgr.GetClient(),
 		Scheme:             mgr.GetScheme(),
 		Publisher:          publishedConfigs,
-		ProcessorNamespace: processorConfigMapNamespace,
+		ProcessorNamespace: processorNamespace,
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 

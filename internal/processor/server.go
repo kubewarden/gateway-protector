@@ -41,10 +41,11 @@ type Server struct {
 	logger   *slog.Logger
 }
 
-// New creates a Server that starts serving with the given Snapshot. Use
-// SetSnapshot to hot-swap the engines/routes it uses, e.g. after a config
-// reload (see internal/processor/config.Watcher). A nil logger defaults to
-// [slog.Default].
+// New creates a Server that starts serving with the given Snapshot (nil
+// until the processor has received its first config from the controller -
+// see internal/processor/config.Subscriber). Use SetSnapshot to hot-swap
+// the engines/routes it uses, e.g. after a config push. A nil logger
+// defaults to [slog.Default].
 func New(initial *config.Snapshot, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()

@@ -2,12 +2,11 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"gopkg.in/yaml.v3"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -18,10 +17,10 @@ import (
 
 // publishedConfig returns the most recently published processor config,
 // via the recordingPublisher wired into ProcessorConfigReconciler for this
-// suite (see suite_test.go) - not by reading the ConfigMap, so specs stay
-// agnostic to the publishing transport (ConfigMap today, possibly a future
-// gRPC stream). It is meant to be called from inside an Eventually/inline
-// assertion, not used to poll for a first publish (the priming run - see
+// suite (see suite_test.go) - not by reading the gRPC config stream
+// directly, so specs stay agnostic to the publishing transport. It is
+// meant to be called from inside an Eventually/inline assertion, not used
+// to poll for a first publish (the priming run - see
 // ProcessorConfigReconciler's SetupWithManager - guarantees one exists
 // very early).
 func publishedConfig() *procconfig.Config {
@@ -32,7 +31,7 @@ func publishedConfig() *procconfig.Config {
 // exactly, so tests can assert on their own policy's contribution to the
 // processor config without being sensitive to what other, unrelated
 // WAFPolicy objects (from other specs, running against the same shared
-// manager/ConfigMap) may currently also be contributing.
+// manager/published config) may currently also be contributing.
 func findRoute(cfg *procconfig.Config, host, pathPrefix string) *procconfig.Route {
 	for i := range cfg.Routes {
 		if cfg.Routes[i].Host == host && cfg.Routes[i].PathPrefix == pathPrefix {
@@ -193,37 +192,37 @@ var _ = Describe("ProcessorConfigReconciler", func() {
 	})
 
 	// This is the only spec in this file allowed to know the processor
-	// config is currently published as a ConfigMap - every other spec
-	// asserts through publishedConfig() (see suite_test.go's
-	// recordingPublisher), which stays agnostic to the transport. If the
-	// transport ever changes (e.g. to a future gRPC config stream),
-	// replace this spec, not the others.
+	// config is published over the gRPC config stream (see
+	// ConfigServer/GRPCPublisher) - every other spec asserts through
+	// publishedConfig() (see suite_test.go's recordingPublisher), which
+	// stays agnostic to the transport. If the transport ever changes
+	// again, replace this spec, not the others.
 	Context("the published config's transport", func() {
-		It("round-trips through the ConfigMap ConfigMapPublisher writes", func() {
+		It("round-trips through the ConfigServer GRPCPublisher pushes to", func() {
 			Eventually(func() bool {
 				want := publishedConfig()
 				if want == nil {
 					return false
 				}
 
-				// Comparing the marshaled YAML text (what ConfigMapPublisher
-				// itself writes) rather than unmarshaling the ConfigMap back
-				// into a procconfig.Config and comparing structs: a nil slice
-				// (e.g. Routes with no entries) round-trips through YAML as a
-				// non-nil empty slice, which would make a struct-level
-				// comparison spuriously fail.
-				wantYAML, err := yaml.Marshal(want)
+				// Comparing the marshaled JSON bytes (what GRPCPublisher
+				// itself sends and hashes) rather than unmarshaling the
+				// snapshot back into a procconfig.Config and comparing
+				// structs: encoding/json round-trips a nil Routes slice as
+				// JSON null, not an empty array, which would make a
+				// struct-level comparison after unmarshaling spuriously
+				// fail (nil slice vs non-nil empty slice).
+				wantJSON, err := json.Marshal(want)
 				if err != nil {
 					return false
 				}
 
-				cm := &corev1.ConfigMap{}
-				key := types.NamespacedName{Name: ProcessorConfigMapName, Namespace: processorConfigMapNamespace}
-				if err := k8sClient.Get(ctx, key, cm); err != nil {
+				snapshot := configServer.latestForTest()
+				if snapshot == nil {
 					return false
 				}
 
-				return cm.Data["config.yaml"] == string(wantYAML)
+				return string(snapshot.GetConfigJson()) == string(wantJSON)
 			}).Should(BeTrue())
 		})
 	})

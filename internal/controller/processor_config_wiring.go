@@ -21,10 +21,11 @@ import (
 
 // ProcessorServiceName is the name of the Service the chart deploys in
 // front of the processor Deployment - the backendRef every generated
-// AgentgatewayPolicy points ext_proc traffic at. Like
-// ProcessorConfigMapName, it is deliberately a fixed name rather than
-// something derived from the Helm release, so this reconciler and the
-// chart can both refer to it without threading a value through Helm.
+// AgentgatewayPolicy points ext_proc traffic at. It is deliberately a
+// fixed name rather than something derived from the Helm release (like
+// the config stream's own Service name - see ConfigStreamRunnable), so
+// this reconciler and the chart can both refer to it without threading a
+// value through Helm.
 const ProcessorServiceName = "gateway-protector-processor"
 
 // ProcessorServicePort is the gRPC port ProcessorServiceName serves the
