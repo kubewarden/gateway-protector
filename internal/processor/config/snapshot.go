@@ -1,10 +1,12 @@
 package config
 
 import (
+	"errors"
 	"sort"
 	"strings"
 
 	"github.com/corazawaf/coraza/v3"
+	"github.com/corazawaf/coraza/v3/experimental"
 )
 
 // Snapshot is an immutable, compiled view of a Config: the coraza.WAF
@@ -157,6 +159,35 @@ func (s *Snapshot) matchRoute(host, path string) (Route, bool) {
 	}
 
 	return Route{}, false
+}
+
+// Close releases every coraza.WAF engine in this Snapshot that implements
+// experimental.WAFCloser, freeing entries those engines own in Coraza's
+// process-wide memoize cache for compiled regex/aho-corasick patterns (see
+// coraza/v3's experimental package). Engines that don't implement
+// WAFCloser (e.g. test fakes) are skipped.
+//
+// Close is safe to call while other goroutines still hold Coraza
+// transactions created from this Snapshot's engines: WAFCloser's contract
+// guarantees in-flight transactions are unaffected, since they hold their
+// own references to the compiled objects they need - only the shared cache
+// entries are released. Errors from individual engines are joined; Close
+// still attempts every engine even if an earlier one fails.
+func (s *Snapshot) Close() error {
+	var errs []error
+
+	for _, waf := range s.engines {
+		closer, ok := waf.(experimental.WAFCloser)
+		if !ok {
+			continue
+		}
+
+		if err := closer.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // stripPort removes a trailing ":<port>" from an authority/Host header

@@ -2,6 +2,7 @@ package processorconfig
 
 import (
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -73,11 +74,22 @@ type DryCompiler func(engineKey, directives string) error
 // CorazaDryCompile is the DryCompiler used in production: it compiles
 // directives in isolation via internal/processor/config.Compile - the same
 // code path the processor itself uses - discarding the resulting engine,
-// since only compilation success/failure matters here.
+// since only compilation success/failure matters here. The compiled engine
+// is closed before returning so its entries in Coraza's process-wide
+// memoize cache for compiled regex/aho-corasick patterns don't leak (see
+// config.Snapshot.Close): the controller may dry-compile many engines over
+// its lifetime, one per distinct rendered directive block. A close failure
+// only logs - it says nothing about whether directives are valid, so it
+// must never cause DryCompile's caller to exclude an otherwise-good policy.
 func CorazaDryCompile(engineKey, directives string) error {
-	_, err := procconfig.Compile(&procconfig.Config{Directives: map[string]string{engineKey: directives}}, nil)
+	snapshot, err := procconfig.Compile(&procconfig.Config{Directives: map[string]string{engineKey: directives}}, nil)
 	if err != nil {
 		return fmt.Errorf("engine %q: %w", engineKey, err)
+	}
+
+	if closeErr := snapshot.Close(); closeErr != nil {
+		slog.Default().Error("Failed to close dry-compiled WAF engine",
+			slog.String("engine_key", engineKey), slog.Any("error", closeErr))
 	}
 
 	return nil

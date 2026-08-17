@@ -26,13 +26,26 @@ const bufSize = 1024 * 1024
 func startTestServer(t *testing.T, cfg *config.Config) envoy_service_ext_proc_v3.ExternalProcessorClient {
 	t.Helper()
 
+	client, _ := startTestServerWithHandle(t, cfg)
+
+	return client
+}
+
+// startTestServerWithHandle is startTestServer, but also returns the
+// underlying *Server so tests can drive it directly (e.g. call
+// SetSnapshot) alongside an active ext_proc stream.
+func startTestServerWithHandle(t *testing.T, cfg *config.Config) (envoy_service_ext_proc_v3.ExternalProcessorClient, *Server) {
+	t.Helper()
+
 	require.NoError(t, config.Validate(cfg))
 	snapshot, err := config.Compile(cfg, nil)
 	require.NoError(t, err)
 
+	server := New(snapshot, nil)
+
 	lis := bufconn.Listen(bufSize)
 	grpcServer := grpc.NewServer()
-	envoy_service_ext_proc_v3.RegisterExternalProcessorServer(grpcServer, New(snapshot, nil))
+	envoy_service_ext_proc_v3.RegisterExternalProcessorServer(grpcServer, server)
 
 	go func() {
 		_ = grpcServer.Serve(lis)
@@ -46,7 +59,7 @@ func startTestServer(t *testing.T, cfg *config.Config) envoy_service_ext_proc_v3
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	return envoy_service_ext_proc_v3.NewExternalProcessorClient(conn)
+	return envoy_service_ext_proc_v3.NewExternalProcessorClient(conn), server
 }
 
 // rawHeaderValue builds a HeaderValue using the raw_value wire
@@ -600,4 +613,143 @@ func TestProcess_ResponseBodyBlocked(t *testing.T) {
 	require.NoError(t, err)
 
 	assertBlockedResponse(t, resp, 4000)
+}
+
+// TestServer_SetSnapshot_SwapsActiveSnapshot asserts that a request started
+// after SetSnapshot uses the newly set Snapshot's engine (and routes), not
+// the one the Server was created with.
+func TestServer_SetSnapshot_SwapsActiveSnapshot(t *testing.T) {
+	oldCfg := &config.Config{
+		Directives: map[string]string{
+			"old": "SecRuleEngine On\n" +
+				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403"` + "\n",
+		},
+		Routes: []config.Route{
+			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "old"}},
+		},
+	}
+	client, server := startTestServerWithHandle(t, oldCfg)
+
+	newCfg := &config.Config{
+		Directives: map[string]string{
+			"new": "SecRuleEngine On\n" +
+				`SecRule ARGS:test "@streq new-malicious" "id:2000,phase:1,deny,status:403"` + "\n",
+		},
+		Routes: []config.Route{
+			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "new"}},
+		},
+	}
+	require.NoError(t, config.Validate(newCfg))
+	newSnapshot, err := config.Compile(newCfg, nil)
+	require.NoError(t, err)
+
+	server.SetSnapshot(newSnapshot)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.Process(ctx)
+	require.NoError(t, err)
+
+	// The old engine's rule (id:1000) must no longer trigger...
+	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/?test=malicious")))
+	resp, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
+	require.NoError(t, stream.Send(requestBodyMessage()))
+	resp, err = stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestBody().GetResponse().GetStatus())
+	require.NoError(t, stream.CloseSend())
+
+	// ...while the new engine's rule (id:2000) does.
+	stream2, err := client.Process(ctx)
+	require.NoError(t, err)
+	require.NoError(t, stream2.Send(requestHeadersMessage("example.com", "/?test=new-malicious")))
+	resp, err = stream2.Recv()
+	require.NoError(t, err)
+	assertBlockedResponse(t, resp, 2000)
+}
+
+// TestServer_SetSnapshot_InFlightRequestSurvivesPreviousSnapshotClose is a
+// regression test for the fix documented on Server.SetSnapshot: closing the
+// previous Snapshot's WAF engines (to release their entries in Coraza's
+// process-wide memoize cache - see config.Snapshot.Close) must not break a
+// request that is still in flight against that old Snapshot. It starts a
+// stream against the initial Snapshot, swaps in a brand-new one mid-stream
+// (closing the first), then drives the rest of the original stream to
+// completion and asserts it still blocks correctly.
+func TestServer_SetSnapshot_InFlightRequestSurvivesPreviousSnapshotClose(t *testing.T) {
+	cfg := &config.Config{
+		Directives: map[string]string{
+			"blocklist": "SecRuleEngine On\n" +
+				`SecRule ARGS:test "@streq malicious" "id:1000,phase:2,deny,status:403"` + "\n",
+		},
+		Routes: []config.Route{
+			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
+		},
+	}
+	client, server := startTestServerWithHandle(t, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.Process(ctx)
+	require.NoError(t, err)
+
+	// Start the request against the Server's initial Snapshot; this
+	// creates a Coraza transaction bound to its "blocklist" engine.
+	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/?test=malicious")))
+	resp, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
+
+	// Swap in an unrelated Snapshot while the above stream is still open:
+	// this closes the original Snapshot's "blocklist" engine (the one the
+	// in-flight stream's transaction was created from).
+	otherCfg := &config.Config{
+		Directives: map[string]string{"noop": "SecRuleEngine On\n"},
+		Routes: []config.Route{
+			{Host: "other.example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "noop"}},
+		},
+	}
+	require.NoError(t, config.Validate(otherCfg))
+	otherSnapshot, err := config.Compile(otherCfg, nil)
+	require.NoError(t, err)
+	server.SetSnapshot(otherSnapshot)
+
+	// The original stream's phase:2 rule must still fire correctly even
+	// though its engine was closed out from under it.
+	require.NoError(t, stream.Send(requestBodyMessage()))
+	resp, err = stream.Recv()
+	require.NoError(t, err)
+
+	assertBlockedResponse(t, resp, 1000)
+}
+
+// TestServer_SetSnapshot_NilAndRepeatedCallsAreSafe covers the guard in
+// SetSnapshot against closing a nil previous Snapshot (the Server's initial
+// state before any config is received) and against closing a Snapshot that
+// is being set again as itself (a no-op config push should never close the
+// engines still actively serving requests).
+func TestServer_SetSnapshot_NilAndRepeatedCallsAreSafe(t *testing.T) {
+	server := New(nil, nil)
+
+	cfg := &config.Config{
+		Directives: map[string]string{"noop": "SecRuleEngine On\n"},
+		Routes: []config.Route{
+			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "noop"}},
+		},
+	}
+	require.NoError(t, config.Validate(cfg))
+	snapshot, err := config.Compile(cfg, nil)
+	require.NoError(t, err)
+
+	// First call: the previous Snapshot is nil, so there is nothing to
+	// close.
+	assert.NotPanics(t, func() { server.SetSnapshot(snapshot) })
+
+	// Setting the exact same Snapshot pointer again must not close the
+	// engines it holds - they may still be in active use.
+	assert.NotPanics(t, func() { server.SetSnapshot(snapshot) })
 }

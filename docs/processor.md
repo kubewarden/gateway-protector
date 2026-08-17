@@ -190,6 +190,12 @@ for its whole lifetime, reconnecting with backoff on any error.
   first config, so Kubernetes doesn't route traffic to a pod with nothing loaded yet; it flips to
   `SERVING` on the first successful `ConfigAck` and never flips back for later config errors (those
   keep serving the last-known-good config instead, per the fail-safe behavior above).
+- **Reload cleanup**: `Server.SetSnapshot` atomically swaps in the new `Snapshot` and closes the one
+  it replaced (`config.Snapshot.Close`, via `coraza/v3`'s `experimental.WAFCloser`), releasing the
+  entries the old `coraza.WAF` engines own in Coraza's process-wide memoize cache for compiled
+  regex/aho-corasick patterns. This is safe even while requests are still in flight against the old
+  `Snapshot`: closing a `coraza.WAF` only evicts shared cache entries, never anything an already-
+  created transaction holds a direct reference to.
 - With leader election (the chart's default), only the active controller replica's `ConfigServer`
   ever has a config to push - see `internal/controller.ConfigStreamRunnable`. A processor connected
   to a standby replica simply finds the config stream unavailable and reconnects with backoff until
@@ -219,13 +225,6 @@ needs a name to dial that doesn't depend on the Helm release name.
   stream/Coraza transaction like any other request; there's no dedicated state machine for it.
 - **No mTLS** between agentgateway and the processor, or between the processor and the controller's
   config stream, yet.
-- **No `WAFCloser` cleanup on reload** - Coraza memoizes compiled regex/aho-corasick patterns in a
-  process-wide cache by default. When a `Snapshot` is superseded, its old `coraza.WAF` engines are
-  simply dropped/garbage collected today; that cache is not explicitly released (`coraza/v3`'s
-  `experimental.WAFCloser` isn't wired up yet). On a processor that reloads configuration very
-  frequently this is a slow memory leak, not a correctness bug - worth revisiting before
-  recommending frequent reloads in production, especially now that config pushes are cheap and
-  immediate.
 - **Config stream acks aren't surfaced to `WAFPolicy` status** - `ConfigServer` logs every
   `ConfigAck` (and a future metric), but a replica repeatedly rejecting a config isn't yet reflected
   back onto the `WAFPolicy` objects that contributed to it.

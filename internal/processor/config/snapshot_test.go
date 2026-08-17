@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/corazawaf/coraza/v3"
@@ -15,6 +16,22 @@ type fakeWAF struct{ name string }
 
 func (f *fakeWAF) NewTransaction() ctypes.Transaction             { return nil }
 func (f *fakeWAF) NewTransactionWithID(string) ctypes.Transaction { return nil }
+
+// closableFakeWAF is a fakeWAF that also implements experimental.WAFCloser,
+// recording whether (and how many times) Close was called and optionally
+// returning a canned error, to test Snapshot.Close without compiling real
+// Coraza engines.
+type closableFakeWAF struct {
+	fakeWAF
+
+	closeErr   error
+	closeCalls int
+}
+
+func (f *closableFakeWAF) Close() error {
+	f.closeCalls++
+	return f.closeErr
+}
 
 func TestSnapshotMatch(t *testing.T) {
 	engineDefault := &fakeWAF{name: "default"}
@@ -242,4 +259,50 @@ func TestStripPort(t *testing.T) {
 			assert.Equal(t, tt.want, stripPort(tt.host))
 		})
 	}
+}
+
+func TestSnapshotClose(t *testing.T) {
+	t.Run("closes every engine implementing WAFCloser", func(t *testing.T) {
+		closableA := &closableFakeWAF{fakeWAF: fakeWAF{name: "a"}}
+		closableB := &closableFakeWAF{fakeWAF: fakeWAF{name: "b"}}
+		engines := map[string]coraza.WAF{"a": closableA, "b": closableB}
+
+		snapshot := newSnapshot(engines, nil)
+
+		require.NoError(t, snapshot.Close())
+		assert.Equal(t, 1, closableA.closeCalls)
+		assert.Equal(t, 1, closableB.closeCalls)
+	})
+
+	t.Run("skips engines that don't implement WAFCloser", func(t *testing.T) {
+		plain := &fakeWAF{name: "plain"}
+		engines := map[string]coraza.WAF{"plain": plain}
+
+		snapshot := newSnapshot(engines, nil)
+
+		assert.NoError(t, snapshot.Close())
+	})
+
+	t.Run("joins errors and still closes every engine", func(t *testing.T) {
+		errA := errors.New("engine a failed to close")
+		errB := errors.New("engine b failed to close")
+		closableA := &closableFakeWAF{fakeWAF: fakeWAF{name: "a"}, closeErr: errA}
+		closableB := &closableFakeWAF{fakeWAF: fakeWAF{name: "b"}, closeErr: errB}
+		engines := map[string]coraza.WAF{"a": closableA, "b": closableB}
+
+		snapshot := newSnapshot(engines, nil)
+
+		err := snapshot.Close()
+		require.Error(t, err)
+		require.ErrorIs(t, err, errA)
+		require.ErrorIs(t, err, errB)
+		assert.Equal(t, 1, closableA.closeCalls)
+		assert.Equal(t, 1, closableB.closeCalls)
+	})
+
+	t.Run("empty snapshot", func(t *testing.T) {
+		snapshot := newSnapshot(map[string]coraza.WAF{}, nil)
+
+		assert.NoError(t, snapshot.Close())
+	})
 }

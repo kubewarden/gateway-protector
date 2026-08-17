@@ -59,15 +59,24 @@ func New(initial *config.Snapshot, logger *slog.Logger) *Server {
 // In-flight requests keep using the Snapshot (and thus the coraza.WAF
 // engine) that was active when they started.
 //
-// TODO: Coraza memoizes compiled regex/aho-corasick patterns in a process-wide
-// cache by default; discarding the old Snapshot's engines here does not
-// release those entries (see coraza/v3's experimental.WAFCloser and its
-// README's "coraza.rule.multiphase_evaluation"/memoization notes). On a
-// processor that reloads config frequently this is a slow memory leak -
-// revisit by calling WAFCloser.Close() on the previous snapshot's engines
-// once they are no longer in use by any in-flight request.
+// The previous Snapshot's engines are closed once swapped out (see
+// config.Snapshot.Close), releasing the entries they own in Coraza's
+// process-wide memoize cache for compiled regex/aho-corasick patterns.
+// This is safe to do immediately, even though in-flight requests may still
+// be using the old Snapshot's engines: Coraza's WAFCloser contract
+// guarantees closing a WAF only releases shared cache entries, leaving any
+// transaction already created from it fully functional. Without this, a
+// processor that reloads config frequently would slowly leak that cache
+// (see coraza/v3's experimental.WAFCloser).
 func (s *Server) SetSnapshot(snapshot *config.Snapshot) {
-	s.snapshot.Store(snapshot)
+	old := s.snapshot.Swap(snapshot)
+	if old == nil || old == snapshot {
+		return
+	}
+
+	if err := old.Close(); err != nil {
+		s.logger.Error("Failed to close previous Snapshot's WAF engines", slog.Any("error", err))
+	}
 }
 
 // requestState holds the per-request state for a single ext_proc stream.
