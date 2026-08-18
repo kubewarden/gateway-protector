@@ -6,6 +6,7 @@ import (
 	"net"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 
@@ -32,6 +33,13 @@ import (
 type ConfigStreamRunnable struct {
 	Server      *ConfigServer
 	BindAddress string
+
+	// Creds, if set, requires mTLS on the config stream: the processor
+	// must present a client certificate verified against the CA bundle
+	// the controller trusts (see ServerTLSConfig/cert_reconciler.go). A
+	// nil Creds serves the stream in plaintext, e.g. for local dev or
+	// tests that dial it directly.
+	Creds credentials.TransportCredentials
 }
 
 var _ interface {
@@ -53,7 +61,11 @@ func (r *ConfigStreamRunnable) Start(ctx context.Context) error {
 	}
 	defer lis.Close()
 
-	grpcServer := grpc.NewServer()
+	var grpcOpts []grpc.ServerOption
+	if r.Creds != nil {
+		grpcOpts = append(grpcOpts, grpc.Creds(r.Creds))
+	}
+	grpcServer := grpc.NewServer(grpcOpts...)
 	configstreamv1.RegisterConfigStreamServiceServer(grpcServer, r.Server)
 
 	healthServer := health.NewServer()

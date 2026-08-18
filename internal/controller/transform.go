@@ -3,6 +3,8 @@ package controller
 import (
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,7 +25,13 @@ import (
 // rule validation lands) - both need an untouched, safely-copied object to
 // mutate. Only managedFields (irrelevant to this controller either way) is
 // stripped from them, via DefaultTransform.
-func CacheOptions() cache.Options {
+//
+// namespace scopes the Secret cache/watch to the controller's own
+// namespace (see cert_reconciler.go, the only reader/writer of Secrets in
+// this controller): without a namespace field selector, the cache would
+// watch Secrets across the whole cluster, requiring a cluster-wide
+// "secrets" RBAC grant instead of a namespaced one.
+func CacheOptions(namespace string) cache.Options {
 	return cache.Options{
 		DefaultTransform: cache.TransformStripManagedFields(),
 		ByObject: map[client.Object]cache.ByObject{
@@ -48,6 +56,11 @@ func CacheOptions() cache.Options {
 			// cache-backed List cannot accidentally garbage-collect them.
 			&agentgatewayapi.AgentgatewayPolicy{}: {
 				Label: labels.SelectorFromSet(labels.Set{wiringManagedLabel: wiringManagedLabelValue}),
+			},
+			// The CA and leaf-cert Secrets cert_reconciler.go manages all
+			// live in the controller's own namespace.
+			&corev1.Secret{}: {
+				Field: fields.OneTermEqualSelector("metadata.namespace", namespace),
 			},
 		},
 	}

@@ -25,6 +25,7 @@ spec:
             - --grpc-bind-address=:9000
             - --config-server-address=gateway-protector-controller-config-stream.{{ .Release.Namespace }}.svc:9002
             - --subscriber-id=$(POD_NAME)
+            - --config-stream-cert-dir=/certs
             {{- if .Values.processor.logLevel }}
             - --log-level={{ .Values.processor.logLevel }}
             {{- end }}
@@ -58,7 +59,13 @@ spec:
           volumeMounts:
             - mountPath: "/tmp"
               name: tmp
+            - mountPath: "/certs"
+              name: certs
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: certs
+          secret:
+            secretName: gateway-protector-processor-client-cert
       terminationGracePeriodSeconds: 10

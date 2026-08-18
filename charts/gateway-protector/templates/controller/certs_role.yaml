@@ -1,0 +1,24 @@
+# Grants CertReconciler (internal/controller/cert_reconciler.go) access to
+# the CA and leaf-cert Secrets this chart creates in templates/certs.yaml,
+# scoped to the release namespace only - see CacheOptions in
+# internal/controller/transform.go for why the cache itself is also
+# namespace-scoped for Secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gateway-protector.fullname" . }}-controller-certs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+      - update
+      - patch

@@ -26,6 +26,7 @@ spec:
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8443
             - --config-stream-bind-address=:9002
+            - --config-stream-cert-dir=/certs
           image: '{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}'
           imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
           name: controller
@@ -58,8 +59,14 @@ spec:
           volumeMounts:
             - mountPath: "/tmp"
               name: tmp
+            - mountPath: "/certs"
+              name: certs
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: certs
+          secret:
+            secretName: gateway-protector-controller-cert
       serviceAccountName: {{ include "gateway-protector.fullname" . }}-controller
       terminationGracePeriodSeconds: 10

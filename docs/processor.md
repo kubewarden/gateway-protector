@@ -21,6 +21,7 @@ replica over a gRPC stream it serves (see `internal/controller/processorconfig` 
 | `--subscriber-id`           | the hostname | Identifies this replica to the controller's config stream logs/metrics (e.g. this pod's name).     |
 | `--log-level`               | `info`  | One of `debug`, `info`, `warn`, `error`.                                                                 |
 | `--grpc-reflection`         | `false` | Enable gRPC server reflection (local debugging only).                                                   |
+| `--config-stream-cert-dir`  | (none)  | Directory with this replica's client certificate/key and the CA bundle for mTLS on the config stream - see [Config stream](#config-stream). Unset dials in plaintext. |
 
 A gRPC health service (`grpc.health.v1.Health`) is always registered, so `kubectl` and Kubernetes'
 native gRPC probes can check readiness/liveness on the same port without a separate HTTP port - see
@@ -200,6 +201,19 @@ for its whole lifetime, reconnecting with backoff on any error.
   ever has a config to push - see `internal/controller.ConfigStreamRunnable`. A processor connected
   to a standby replica simply finds the config stream unavailable and reconnects with backoff until
   a leader is serving again; multi-replica controller HA beyond this hasn't been exercised.
+- **mTLS, no cert-manager dependency**: the chart's default install secures the config stream with
+  mutual TLS. A self-signed CA and two leaf certificates (controller server, processor client) are
+  bootstrapped by the chart at install/upgrade time (`charts/gateway-protector/templates/certs.yaml`,
+  Sprig `genCAWithKey`/`genSignedCertWithKey`, reusing existing Secrets via `lookup` across
+  upgrades) and rotated afterwards by `internal/controller.CertReconciler`, a `manager.Runnable`
+  that runs on the leader every 12h and regenerates whatever is within 60 days of expiring - the
+  same no-cert-manager approach kubewarden's admission controller uses. See
+  `internal/certs` for the certificate generation/verification code and `internal/certs.ReloadingClientCredentials`
+  / `internal/controller.ServerTLSConfig` for how each side reloads its certificate/CA bundle from
+  its mounted Secret on every connection, so a rotation takes effect without restarting either
+  process. Passing `--config-stream-cert-dir` to the processor (and the equivalent
+  `--config-stream-cert-dir` to the controller) is what turns this on; leaving it unset dials/serves
+  in plaintext, e.g. for local dev.
 
 ## Deployment
 
@@ -207,7 +221,8 @@ for its whole lifetime, reconnecting with backoff on any error.
 
 - `deployment.yaml` — passes `--config-server-address` pointing at the controller's config stream
   Service (see below); liveness/readiness use Kubernetes' native gRPC probe support against the
-  health service above.
+  health service above. Mounts the `gateway-protector-processor-client-cert` Secret at `/certs` and
+  passes `--config-stream-cert-dir=/certs` for mTLS (see [Config stream](#config-stream)).
 - `service.yaml` — a `ClusterIP` Service on port `9000`. This is the `backendRef` every generated
   `AgentgatewayPolicy` points `ext_proc` traffic at (see `internal/controller/processor_config_wiring.go`).
 
@@ -223,8 +238,8 @@ needs a name to dial that doesn't depend on the Helm release name.
   redaction, masking, or response-body mutation yet.
 - **No WebSocket-specific handling** - a long-lived upgraded connection is just a single ext_proc
   stream/Coraza transaction like any other request; there's no dedicated state machine for it.
-- **No mTLS** between agentgateway and the processor, or between the processor and the controller's
-  config stream, yet.
+- **No mTLS between agentgateway and the processor** yet (the config stream between the processor
+  and the controller is mTLS by default - see above).
 - **Config stream acks aren't surfaced to `WAFPolicy` status** - `ConfigServer` logs every
   `ConfigAck` (and a future metric), but a replica repeatedly rejecting a config isn't yet reflected
   back onto the `WAFPolicy` objects that contributed to it.

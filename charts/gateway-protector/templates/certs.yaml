@@ -1,0 +1,93 @@
+# This template generates and rotates, with no cert-manager dependency,
+# the CA and leaf certificates that secure the config stream between the
+# controller and the processor with mTLS. The ongoing rotation - not
+# just the initial bootstrap this template handles - is done
+# by the controller.
+#
+# Secret names and data keys here must match internal/certs/constants.go.
+
+{{ $ca := genCAWithKey "gateway-protector-ca" 3650 (genPrivateKey "ecdsa") }}
+{{ $caCert := ($ca.Cert | b64enc) }}
+{{ $caPrivateKey := ($ca.Key | b64enc) }}
+{{ $caBundle := $caCert }}
+
+{{ $oldCaCert := "" }}
+{{ $controllerCert := "" }}
+{{ $controllerKey := "" }}
+{{ $processorCert := "" }}
+{{ $processorKey := "" }}
+
+{{ $caSecret := (lookup "v1" "Secret" .Release.Namespace "gateway-protector-ca") }}
+{{ if $caSecret }}
+{{ $caCert = (index $caSecret.data "tls.crt") }}
+{{ $caPrivateKey = (index $caSecret.data "tls.key") }}
+# If the old CA certificate is missing, default it to "" to avoid issues with
+# b64dec below - it may be absent on a fresh install, or removed by
+# CertReconciler once it expired.
+{{ $oldCaCert = (index $caSecret.data "old-ca.crt" | default "") }}
+{{ $caBundle = printf "%s%s" ($caCert | b64dec) ($oldCaCert | b64dec) | b64enc }}
+{{ $ca = buildCustomCert $caCert $caPrivateKey }}
+{{ end }}
+
+{{ $controllerServiceDNSName := printf "gateway-protector-controller-config-stream.%s.svc" .Release.Namespace }}
+
+{{ $controllerCertSecret := (lookup "v1" "Secret" .Release.Namespace "gateway-protector-controller-cert") }}
+{{ if $controllerCertSecret }}
+{{ $controllerCert = (index $controllerCertSecret.data "tls.crt") }}
+{{ $controllerKey = (index $controllerCertSecret.data "tls.key") }}
+{{ else }}
+{{ $controllerCertKeyPair := genSignedCertWithKey $controllerServiceDNSName nil (list $controllerServiceDNSName) 365 $ca (genPrivateKey "ecdsa") }}
+{{ $controllerCert = ($controllerCertKeyPair.Cert | b64enc) }}
+{{ $controllerKey = ($controllerCertKeyPair.Key | b64enc) }}
+{{ end }}
+
+{{ $processorCertSecret := (lookup "v1" "Secret" .Release.Namespace "gateway-protector-processor-client-cert") }}
+{{ if $processorCertSecret }}
+{{ $processorCert = (index $processorCertSecret.data "tls.crt") }}
+{{ $processorKey = (index $processorCertSecret.data "tls.key") }}
+{{ else }}
+{{ $processorCertKeyPair := genSignedCertWithKey "gateway-protector-processor-client" nil (list "gateway-protector-processor-client") 365 $ca (genPrivateKey "ecdsa") }}
+{{ $processorCert = ($processorCertKeyPair.Cert | b64enc) }}
+{{ $processorKey = ($processorCertKeyPair.Key | b64enc) }}
+{{ end }}
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-protector-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+data:
+  tls.crt: {{ $caCert }}
+  tls.key: {{ $caPrivateKey }}
+  {{- if $oldCaCert }}
+  old-ca.crt: {{ $oldCaCert }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-protector-controller-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+data:
+  tls.crt: {{ $controllerCert }}
+  tls.key: {{ $controllerKey }}
+  ca.crt: {{ $caBundle }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-protector-processor-client-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: processor
+data:
+  tls.crt: {{ $processorCert }}
+  tls.key: {{ $processorKey }}
+  ca.crt: {{ $caBundle }}

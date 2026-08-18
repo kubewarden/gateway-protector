@@ -143,7 +143,7 @@ var _ = BeforeSuite(func() {
 	mgr, err = ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:  scheme.Scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
-		Cache:   CacheOptions(),
+		Cache:   CacheOptions(processorNamespace),
 	})
 	Expect(err).NotTo(HaveOccurred())
 

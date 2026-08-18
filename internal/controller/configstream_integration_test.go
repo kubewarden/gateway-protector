@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
 	configstreamv1 "github.com/kubewarden/gateway-protector/internal/configstream/v1"
@@ -64,8 +63,7 @@ func TestConfigStreamEndToEnd(t *testing.T) {
 	server, dialer := startIntegrationConfigServer(t)
 	publisher := &GRPCPublisher{Server: server}
 
-	subscriber := procconfig.NewSubscriber("passthrough:///bufnet", "test-replica", nil,
-		dialer, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	subscriber := procconfig.NewSubscriber("passthrough:///bufnet", "test-replica", nil, nil, dialer)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

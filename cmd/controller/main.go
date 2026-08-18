@@ -26,6 +26,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"google.golang.org/grpc/credentials"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -76,6 +77,7 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var configStreamBindAddress string
+	var configStreamCertDir string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
@@ -84,6 +86,10 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.StringVar(&configStreamBindAddress, "config-stream-bind-address", ":9002",
 		"The address the processor config stream's gRPC service binds to.")
+	flag.StringVar(&configStreamCertDir, "config-stream-cert-dir", "",
+		"Directory containing the config stream server's certificate (tls.crt, tls.key) and the CA bundle "+
+			"(ca.crt) used to verify the processor's client certificate. If unset, the config stream is served "+
+			"in plaintext.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -153,13 +159,19 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
+	namespace, err := podNamespace()
+	if err != nil {
+		setupLog.Error(err, "Failed to determine the controller's namespace")
+		os.Exit(1)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "64ecc2d4.gateway-protector.kubewarden.io",
-		Cache:                  controller.CacheOptions(),
+		Cache:                  controller.CacheOptions(namespace),
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -185,16 +197,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	namespace, err := podNamespace()
-	if err != nil {
-		setupLog.Error(err, "Failed to determine the controller's namespace")
+	if err := (&controller.CertReconciler{
+		Client:    mgr.GetClient(),
+		Log:       ctrl.Log.WithName("cert-reconciler"),
+		Namespace: namespace,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "cert-reconciler")
 		os.Exit(1)
+	}
+
+	var configStreamCreds credentials.TransportCredentials
+	if configStreamCertDir != "" {
+		tlsConfig, watcher, err := controller.ServerTLSConfig(configStreamCertDir)
+		if err != nil {
+			setupLog.Error(err, "Failed to build the config stream server's TLS configuration")
+			os.Exit(1)
+		}
+		if err := mgr.Add(watcher); err != nil {
+			setupLog.Error(err, "Failed to add the config stream certificate watcher")
+			os.Exit(1)
+		}
+		configStreamCreds = credentials.NewTLS(tlsConfig)
 	}
 
 	configServer := controller.NewConfigServer()
 	if err := mgr.Add(&controller.ConfigStreamRunnable{
 		Server:      configServer,
 		BindAddress: configStreamBindAddress,
+		Creds:       configStreamCreds,
 	}); err != nil {
 		setupLog.Error(err, "Failed to add the processor config stream server")
 		os.Exit(1)

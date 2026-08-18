@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
 	configstreamv1 "github.com/kubewarden/gateway-protector/internal/configstream/v1"
@@ -43,16 +44,22 @@ type Subscriber struct {
 // controller's config stream gRPC service) once Run is called.
 // subscriberID identifies this processor replica to the controller (e.g.
 // its pod name) for the controller's own logs/metrics only. A nil logger
-// defaults to [slog.Default]. Extra dialOpts are appended after the
-// default (insecure, production TLS is not implemented yet - see the
-// repository's top-level TODO file) transport credentials, letting tests
-// inject a custom dialer (e.g. bufconn).
-func NewSubscriber(address, subscriberID string, logger *slog.Logger, dialOpts ...grpc.DialOption) *Subscriber {
+// defaults to [slog.Default]. A nil creds dials in plaintext (e.g. for
+// local dev); production deployments pass
+// certs.NewReloadingClientCredentials to authenticate with a client
+// certificate over mTLS - see cmd/processor/main.go. Extra dialOpts are
+// appended after the transport credentials, letting tests inject a custom
+// dialer (e.g. bufconn).
+func NewSubscriber(address, subscriberID string, logger *slog.Logger, creds credentials.TransportCredentials, dialOpts ...grpc.DialOption) *Subscriber {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
-	opts := append([]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}, dialOpts...)
+	if creds == nil {
+		creds = insecure.NewCredentials()
+	}
+
+	opts := append([]grpc.DialOption{grpc.WithTransportCredentials(creds)}, dialOpts...)
 
 	return &Subscriber{
 		address:      address,

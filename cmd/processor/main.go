@@ -15,10 +15,12 @@ import (
 
 	envoy_service_ext_proc_v3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/kubewarden/gateway-protector/internal/certs"
 	"github.com/kubewarden/gateway-protector/internal/processor"
 	"github.com/kubewarden/gateway-protector/internal/processor/config"
 )
@@ -34,6 +36,7 @@ type Config struct {
 	SubscriberID        string
 	LogLevel            string
 	EnableReflection    bool
+	ConfigStreamCertDir string
 }
 
 // parseFlags binds and parses the processor's command-line flags into a
@@ -49,6 +52,10 @@ func parseFlags() Config {
 		"stream logs/metrics (e.g. this pod's name). Defaults to the hostname if unset.")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level: debug, info, warn, or error.")
 	flag.BoolVar(&cfg.EnableReflection, "grpc-reflection", false, "Enable gRPC server reflection (useful for local debugging).")
+	flag.StringVar(&cfg.ConfigStreamCertDir, "config-stream-cert-dir", "",
+		"Directory containing this processor's client certificate (tls.crt, tls.key) and the CA bundle "+
+			"(ca.crt) used to verify the controller's config stream server certificate. If unset, the config "+
+			"stream is dialed in plaintext.")
 	flag.Parse()
 
 	if cfg.SubscriberID == "" {
@@ -108,7 +115,7 @@ func run() int {
 		})
 	}
 
-	subscriber := config.NewSubscriber(cfg.ConfigServerAddress, cfg.SubscriberID, logger)
+	subscriber := config.NewSubscriber(cfg.ConfigServerAddress, cfg.SubscriberID, logger, configStreamCreds(cfg.ConfigStreamCertDir))
 	go func() {
 		if err := subscriber.Run(ctx, onChange); err != nil {
 			logger.ErrorContext(ctx, "Config stream subscriber stopped", slog.Any("error", err))
@@ -129,6 +136,7 @@ func run() int {
 	logger.InfoContext(ctx, "Processor ready",
 		slog.String("grpc-bind-address", cfg.GRPCBindAddress),
 		slog.String("config-server-address", cfg.ConfigServerAddress),
+		slog.Bool("config-stream-mtls", cfg.ConfigStreamCertDir != ""),
 		slog.String("crs-version", config.EmbeddedCRSVersion()))
 	if err := grpcServer.Serve(lis); err != nil {
 		logger.ErrorContext(ctx, "gRPC server failed", slog.Any("error", err))
@@ -149,4 +157,15 @@ func parseLogLevel(level string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// configStreamCreds returns the transport credentials the config stream
+// Subscriber dials with: mTLS client credentials reloaded from certDir on
+// every handshake if certDir is set, or nil (plaintext) otherwise.
+func configStreamCreds(certDir string) credentials.TransportCredentials {
+	if certDir == "" {
+		return nil
+	}
+
+	return certs.NewReloadingClientCredentials(certDir)
 }
