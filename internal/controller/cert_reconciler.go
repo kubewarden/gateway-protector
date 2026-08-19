@@ -16,15 +16,18 @@ import (
 )
 
 // CertReconciler is a manager.Runnable (not a watch-based reconciler) that
-// periodically checks the CA and the two leaf certificates (controller
-// server cert, processor client cert) used for mTLS on the config stream,
-// rotating whatever is within RotationLookahead of expiring.
+// periodically checks the CA and the leaf certificates used for mTLS -
+// the controller's config-stream server cert, the processor's config-stream
+// client cert, the processor's ext_proc server cert, and agentgateway's
+// ext_proc client cert - rotating whatever is within RotationLookahead of
+// expiring.
 //
 // This mirrors kubewarden's admission-controller CertReconciler
 // (github.com/kubewarden/adm-controller/internal/controller), with one
 // difference: instead of patching a webhook's CABundle, it keeps each leaf
-// Secret's own CA-bundle key (certs.CABundleKey) up to date, since that is
-// how this project's server and client learn which CA(s) to trust.
+// Secret's own CA-bundle key (certs.CABundleKey) up to date, plus a
+// CA-bundle ConfigMap (certs.CABundleConfigMapName) for agentgateway,
+// which only reads trust bundles from ConfigMaps.
 type CertReconciler struct {
 	client.Client
 
@@ -73,9 +76,9 @@ func (r *CertReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // reconcile rotates the CA (if due), drops the previous CA once it has
-// expired, and rotates both leaf certificates (if due, or if signed by a
-// CA no longer current) - refreshing each leaf Secret's CA-bundle key
-// along the way.
+// expired, rotates every leaf certificate (if due, or if signed by a CA
+// no longer current) - refreshing each leaf Secret's CA-bundle key along
+// the way - and keeps the CA-bundle ConfigMap in sync.
 func (r *CertReconciler) reconcile(ctx context.Context) error {
 	caSecret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{Name: certs.CASecretName, Namespace: r.Namespace}, caSecret); err != nil {
@@ -95,12 +98,18 @@ func (r *CertReconciler) reconcile(ctx context.Context) error {
 	}
 	caBundle := append(append([]byte{}, caCert...), caSecret.Data[certs.OldCACertKey]...)
 
+	if err := r.reconcileCABundleConfigMap(ctx, caBundle); err != nil {
+		return fmt.Errorf("failed to reconcile CA bundle configmap: %w", err)
+	}
+
 	for _, leaf := range []struct {
 		secretName string
 		dnsName    string
 	}{
 		{certs.ControllerCertSecretName, certs.ControllerServerDNSName + "." + r.Namespace + ".svc"},
 		{certs.ProcessorClientCertSecretName, certs.ProcessorClientCommonName},
+		{certs.ProcessorServerCertSecretName, certs.DNSName(certs.ProcessorServerServiceName, r.Namespace)},
+		{certs.AgentgatewayClientCertSecretName, certs.AgentgatewayClientCommonName},
 	} {
 		leafSecret := &corev1.Secret{}
 		if err := r.Get(ctx, types.NamespacedName{Name: leaf.secretName, Namespace: r.Namespace}, leafSecret); err != nil {
@@ -110,6 +119,33 @@ func (r *CertReconciler) reconcile(ctx context.Context) error {
 		if err := r.reconcileLeafCert(ctx, leafSecret, caSecret, leaf.dnsName, caBundle); err != nil {
 			return fmt.Errorf("failed to reconcile leaf cert secret %q: %w", leaf.secretName, err)
 		}
+	}
+
+	return nil
+}
+
+// reconcileCABundleConfigMap keeps the CA-bundle ConfigMap's data in sync
+// with caBundle. Unlike the leaf Secrets (whose CA-bundle key is only one
+// of several data keys touched by reconcileLeafCert), this ConfigMap
+// exists solely to carry the bundle, for agentgateway's
+// backend.tls.caCertificateRefs (which only accepts ConfigMaps, never
+// Secrets).
+func (r *CertReconciler) reconcileCABundleConfigMap(ctx context.Context, caBundle []byte) error {
+	configMap := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Name: certs.CABundleConfigMapName, Namespace: r.Namespace}, configMap); err != nil {
+		return fmt.Errorf("failed to get CA bundle configmap: %w", err)
+	}
+
+	if configMap.Data[certs.CABundleKey] == string(caBundle) {
+		return nil
+	}
+
+	if configMap.Data == nil {
+		configMap.Data = map[string]string{}
+	}
+	configMap.Data[certs.CABundleKey] = string(caBundle)
+	if err := r.Update(ctx, configMap); err != nil {
+		return fmt.Errorf("failed to update CA bundle configmap: %w", err)
 	}
 
 	return nil

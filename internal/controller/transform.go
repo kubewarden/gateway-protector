@@ -26,11 +26,11 @@ import (
 // mutate. Only managedFields (irrelevant to this controller either way) is
 // stripped from them, via DefaultTransform.
 //
-// namespace scopes the Secret cache/watch to the controller's own
-// namespace (see cert_reconciler.go, the only reader/writer of Secrets in
-// this controller): without a namespace field selector, the cache would
-// watch Secrets across the whole cluster, requiring a cluster-wide
-// "secrets" RBAC grant instead of a namespaced one.
+// namespace scopes the Secret/ConfigMap cache/watch to the controller's
+// own namespace (see cert_reconciler.go, the only reader/writer of
+// Secrets and ConfigMaps in this controller): without a namespace field
+// selector, the cache would watch these cluster-wide, requiring
+// cluster-wide RBAC grants instead of namespaced ones.
 func CacheOptions(namespace string) cache.Options {
 	return cache.Options{
 		DefaultTransform: cache.TransformStripManagedFields(),
@@ -60,6 +60,11 @@ func CacheOptions(namespace string) cache.Options {
 			// The CA and leaf-cert Secrets cert_reconciler.go manages all
 			// live in the controller's own namespace.
 			&corev1.Secret{}: {
+				Field: fields.OneTermEqualSelector("metadata.namespace", namespace),
+			},
+			// The CA-bundle ConfigMap cert_reconciler.go manages also
+			// lives in the controller's own namespace.
+			&corev1.ConfigMap{}: {
 				Field: fields.OneTermEqualSelector("metadata.namespace", namespace),
 			},
 		},

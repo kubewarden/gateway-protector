@@ -1,8 +1,9 @@
 # This template generates and rotates, with no cert-manager dependency,
-# the CA and leaf certificates that secure the config stream between the
-# controller and the processor with mTLS. The ongoing rotation - not
-# just the initial bootstrap this template handles - is done
-# by the controller.
+# the CA and leaf certificates that secure both mTLS connections in this
+# chart: the config stream between the controller and the processor, and
+# the ext_proc connection between agentgateway and the processor. The
+# ongoing rotation - not just the initial bootstrap this template handles -
+# is done by the controller.
 #
 # Secret names and data keys here must match internal/certs/constants.go.
 
@@ -16,6 +17,10 @@
 {{ $controllerKey := "" }}
 {{ $processorCert := "" }}
 {{ $processorKey := "" }}
+{{ $processorServerCert := "" }}
+{{ $processorServerKey := "" }}
+{{ $agentgatewayClientCert := "" }}
+{{ $agentgatewayClientKey := "" }}
 
 {{ $caSecret := (lookup "v1" "Secret" .Release.Namespace "gateway-protector-ca") }}
 {{ if $caSecret }}
@@ -51,6 +56,28 @@
 {{ $processorKey = ($processorCertKeyPair.Key | b64enc) }}
 {{ end }}
 
+{{ $processorServiceDNSName := printf "gateway-protector-processor.%s.svc" .Release.Namespace }}
+
+{{ $processorServerCertSecret := (lookup "v1" "Secret" .Release.Namespace "gateway-protector-processor-server-cert") }}
+{{ if $processorServerCertSecret }}
+{{ $processorServerCert = (index $processorServerCertSecret.data "tls.crt") }}
+{{ $processorServerKey = (index $processorServerCertSecret.data "tls.key") }}
+{{ else }}
+{{ $processorServerCertKeyPair := genSignedCertWithKey $processorServiceDNSName nil (list $processorServiceDNSName) 365 $ca (genPrivateKey "ecdsa") }}
+{{ $processorServerCert = ($processorServerCertKeyPair.Cert | b64enc) }}
+{{ $processorServerKey = ($processorServerCertKeyPair.Key | b64enc) }}
+{{ end }}
+
+{{ $agentgatewayClientCertSecret := (lookup "v1" "Secret" .Release.Namespace "gateway-protector-agentgateway-client-cert") }}
+{{ if $agentgatewayClientCertSecret }}
+{{ $agentgatewayClientCert = (index $agentgatewayClientCertSecret.data "tls.crt") }}
+{{ $agentgatewayClientKey = (index $agentgatewayClientCertSecret.data "tls.key") }}
+{{ else }}
+{{ $agentgatewayClientCertKeyPair := genSignedCertWithKey "gateway-protector-agentgateway-client" nil (list "gateway-protector-agentgateway-client") 365 $ca (genPrivateKey "ecdsa") }}
+{{ $agentgatewayClientCert = ($agentgatewayClientCertKeyPair.Cert | b64enc) }}
+{{ $agentgatewayClientKey = ($agentgatewayClientCertKeyPair.Key | b64enc) }}
+{{ end }}
+
 apiVersion: v1
 kind: Secret
 metadata:
@@ -59,6 +86,7 @@ metadata:
   labels:
     {{ include "gateway-protector.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller
+type: kubernetes.io/tls
 data:
   tls.crt: {{ $caCert }}
   tls.key: {{ $caPrivateKey }}
@@ -74,6 +102,7 @@ metadata:
   labels:
     {{ include "gateway-protector.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller
+type: kubernetes.io/tls
 data:
   tls.crt: {{ $controllerCert }}
   tls.key: {{ $controllerKey }}
@@ -87,7 +116,56 @@ metadata:
   labels:
     {{ include "gateway-protector.labels" . | nindent 4 }}
     app.kubernetes.io/component: processor
+type: kubernetes.io/tls
 data:
   tls.crt: {{ $processorCert }}
   tls.key: {{ $processorKey }}
   ca.crt: {{ $caBundle }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-protector-processor-server-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: processor
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $processorServerCert }}
+  tls.key: {{ $processorServerKey }}
+  ca.crt: {{ $caBundle }}
+---
+# Every leaf/CA Secret in this file is typed kubernetes.io/tls: the type
+# only requires tls.crt/tls.key to be present, extra keys (ca.crt,
+# old-ca.crt) are allowed - cert-manager itself ships Secrets shaped
+# exactly like this - and it lets kubectl/tooling recognize them as TLS
+# material. This one additionally has to be kubernetes.io/tls because
+# agentgateway's AgentgatewayPolicy backend.tls.mtlsCertificateRef expects
+# that Secret type.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-protector-agentgateway-client-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: processor
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $agentgatewayClientCert }}
+  tls.key: {{ $agentgatewayClientKey }}
+---
+# agentgateway's AgentgatewayPolicy backend.tls.caCertificateRefs only
+# accepts ConfigMaps, never Secrets - so the CA bundle is duplicated here
+# alongside the ca.crt key already carried by every leaf Secret above.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-protector-ca-bundle
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: processor
+data:
+  ca.crt: {{ $caBundle | b64dec | quote }}

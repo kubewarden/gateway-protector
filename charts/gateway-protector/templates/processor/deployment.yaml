@@ -23,9 +23,11 @@ spec:
             - /processor
           args:
             - --grpc-bind-address=:9000
+            - --health-bind-address=:9001
             - --config-server-address=gateway-protector-controller-config-stream.{{ .Release.Namespace }}.svc:9002
             - --subscriber-id=$(POD_NAME)
-            - --config-stream-cert-dir=/certs
+            - --config-stream-cert-dir=/config-stream-certs
+            - --ext-proc-cert-dir=/ext-proc-certs
             {{- if .Values.processor.logLevel }}
             - --log-level={{ .Values.processor.logLevel }}
             {{- end }}
@@ -42,14 +44,16 @@ spec:
           ports:
             - name: grpc
               containerPort: 9000
+            - name: health
+              containerPort: 9001
           livenessProbe:
             grpc:
-              port: 9000
+              port: 9001
             initialDelaySeconds: 5
             periodSeconds: 20
           readinessProbe:
             grpc:
-              port: 9000
+              port: 9001
             initialDelaySeconds: 5
             periodSeconds: 10
           {{- if and .Values.processor .Values.processor.resources }}
@@ -59,13 +63,19 @@ spec:
           volumeMounts:
             - mountPath: "/tmp"
               name: tmp
-            - mountPath: "/certs"
-              name: certs
+            - mountPath: "/config-stream-certs"
+              name: config-stream-certs
+              readOnly: true
+            - mountPath: "/ext-proc-certs"
+              name: ext-proc-certs
               readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
-        - name: certs
+        - name: config-stream-certs
           secret:
             secretName: gateway-protector-processor-client-cert
+        - name: ext-proc-certs
+          secret:
+            secretName: gateway-protector-processor-server-cert
       terminationGracePeriodSeconds: 10

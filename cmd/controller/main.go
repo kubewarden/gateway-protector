@@ -39,6 +39,7 @@ import (
 
 	gwpv1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
 	"github.com/kubewarden/gateway-protector/internal/agentgatewayapi"
+	"github.com/kubewarden/gateway-protector/internal/certs"
 	"github.com/kubewarden/gateway-protector/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -208,7 +209,7 @@ func main() {
 
 	var configStreamCreds credentials.TransportCredentials
 	if configStreamCertDir != "" {
-		tlsConfig, watcher, err := controller.ServerTLSConfig(configStreamCertDir)
+		tlsConfig, watcher, err := certs.ServerTLSConfig(configStreamCertDir)
 		if err != nil {
 			setupLog.Error(err, "Failed to build the config stream server's TLS configuration")
 			os.Exit(1)

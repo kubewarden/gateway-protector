@@ -17,14 +17,18 @@ replica over a gRPC stream it serves (see `internal/controller/processorconfig` 
 | Flag                        | Default | Description                                                                                             |
 | ---------------------------- | --------- | ----------------------------------------------------------------------------------------------------------- |
 | `--grpc-bind-address`       | `:9000` | Address the ext_proc gRPC service binds to.                                                             |
+| `--health-bind-address`     | `:9001` | Address the plaintext gRPC health service binds to - see below.                                         |
 | `--config-server-address`   | (none, required) | The controller's config stream gRPC address (host:port) - see [Config stream](#config-stream). |
 | `--subscriber-id`           | the hostname | Identifies this replica to the controller's config stream logs/metrics (e.g. this pod's name).     |
 | `--log-level`               | `info`  | One of `debug`, `info`, `warn`, `error`.                                                                 |
 | `--grpc-reflection`         | `false` | Enable gRPC server reflection (local debugging only).                                                   |
 | `--config-stream-cert-dir`  | (none)  | Directory with this replica's client certificate/key and the CA bundle for mTLS on the config stream - see [Config stream](#config-stream). Unset dials in plaintext. |
+| `--ext-proc-cert-dir`       | (none)  | Directory with this replica's ext_proc server certificate/key and the CA bundle for mTLS with agentgateway - see [ext_proc mTLS](#ext_proc-mtls). Unset serves in plaintext. |
 
-A gRPC health service (`grpc.health.v1.Health`) is always registered, so `kubectl` and Kubernetes'
-native gRPC probes can check readiness/liveness on the same port without a separate HTTP port - see
+A gRPC health service (`grpc.health.v1.Health`) is always registered on its own plaintext listener
+(`--health-bind-address`), separate from the ext_proc service itself: Kubernetes' native gRPC probes
+can't present a client certificate, so they can't reach a health service registered on the ext_proc
+listener once `--ext-proc-cert-dir` requires one there - see
 [Config stream](#config-stream) for how readiness is tied to having received a first config.
 
 ## Configuration
@@ -208,12 +212,39 @@ for its whole lifetime, reconnecting with backoff on any error.
   upgrades) and rotated afterwards by `internal/controller.CertReconciler`, a `manager.Runnable`
   that runs on the leader every 12h and regenerates whatever is within 60 days of expiring - the
   same no-cert-manager approach kubewarden's admission controller uses. See
-  `internal/certs` for the certificate generation/verification code and `internal/certs.ReloadingClientCredentials`
-  / `internal/controller.ServerTLSConfig` for how each side reloads its certificate/CA bundle from
-  its mounted Secret on every connection, so a rotation takes effect without restarting either
-  process. Passing `--config-stream-cert-dir` to the processor (and the equivalent
-  `--config-stream-cert-dir` to the controller) is what turns this on; leaving it unset dials/serves
-  in plaintext, e.g. for local dev.
+  `internal/certs` for the certificate generation/verification code and
+  `internal/certs.ReloadingClientCredentials` / `internal/certs.ServerTLSConfig` for how each side
+  reloads its certificate/CA bundle from its mounted Secret on every connection, so a rotation takes
+  effect without restarting either process. Passing `--config-stream-cert-dir` to the processor (and
+  the equivalent flag to the controller) is what turns this on; leaving it unset dials/serves in
+  plaintext, e.g. for local dev.
+
+## ext_proc mTLS
+
+agentgateway's connection to the processor's ext_proc service is secured with mutual TLS the same
+way, and by the same `CertReconciler`: two more leaf certificates - a processor ext_proc server
+cert and an agentgateway client cert - signed by the same CA as the config-stream certificates
+above, bootstrapped and rotated identically.
+
+- Passing `--ext-proc-cert-dir` to the processor requires and verifies agentgateway's client
+  certificate on `--grpc-bind-address` (`certs.ServerTLSConfig`, `tls.RequireAndVerifyClientCert`);
+  leaving it unset serves ext_proc in plaintext.
+- agentgateway itself has no flag for this: TLS on a backend connection (including the ext_proc
+  dial) is attached via an `AgentgatewayPolicy`'s `backend.tls`, targeting the processor's `Service`
+  by name - see `charts/gateway-protector/templates/processor/backend-tls-policy.yaml`. Unlike the
+  `AgentgatewayPolicy` objects the controller generates to wire WAF-protected routes to the
+  processor (see `docs/wafpolicy-lifecycle.md`'s "Gateway wiring"), this one is static and
+  chart-owned: it doesn't depend on any `WAFPolicy`/`HTTPRoute`/`Gateway` state, so there's nothing
+  to reconcile. It deliberately omits the `gateway-protector.kubewarden.io/managed=true` label the
+  controller's own generated policies carry, so the controller's cache/watch and wiring garbage
+  collection (see `internal/controller/processor_config_wiring.go`) never see it.
+- agentgateway reads its client certificate from a `kubernetes.io/tls` Secret
+  (`mtlsCertificateRef`) but its CA bundle from a **ConfigMap** (`caCertificateRefs`) - it has no
+  Secret-based CA bundle option. `CertReconciler` therefore also maintains a
+  `gateway-protector-ca-bundle` ConfigMap alongside every leaf Secret's own `ca.crt` key.
+- This composes with the controller's own generated `traffic.extProc.backendRef` policies:
+  agentgateway resolves backend TLS by the ext_proc `backendRef`'s target Service, independent of
+  which Gateway/HTTPRoute policy carries that `backendRef`.
 
 ## Deployment
 
@@ -221,8 +252,11 @@ for its whole lifetime, reconnecting with backoff on any error.
 
 - `deployment.yaml` — passes `--config-server-address` pointing at the controller's config stream
   Service (see below); liveness/readiness use Kubernetes' native gRPC probe support against the
-  health service above. Mounts the `gateway-protector-processor-client-cert` Secret at `/certs` and
-  passes `--config-stream-cert-dir=/certs` for mTLS (see [Config stream](#config-stream)).
+  health service on `--health-bind-address`. Mounts the `gateway-protector-processor-client-cert`
+  Secret at `/config-stream-certs` (`--config-stream-cert-dir=/config-stream-certs`) and the
+  `gateway-protector-processor-server-cert` Secret at `/ext-proc-certs`
+  (`--ext-proc-cert-dir=/ext-proc-certs`) - see [Config stream](#config-stream) and
+  [ext_proc mTLS](#ext_proc-mtls).
 - `service.yaml` — a `ClusterIP` Service on port `9000`. This is the `backendRef` every generated
   `AgentgatewayPolicy` points `ext_proc` traffic at (see `internal/controller/processor_config_wiring.go`).
 
@@ -238,8 +272,6 @@ needs a name to dial that doesn't depend on the Helm release name.
   redaction, masking, or response-body mutation yet.
 - **No WebSocket-specific handling** - a long-lived upgraded connection is just a single ext_proc
   stream/Coraza transaction like any other request; there's no dedicated state machine for it.
-- **No mTLS between agentgateway and the processor** yet (the config stream between the processor
-  and the controller is mTLS by default - see above).
 - **Config stream acks aren't surfaced to `WAFPolicy` status** - `ConfigServer` logs every
   `ConfigAck` (and a future metric), but a replica repeatedly rejecting a config isn't yet reflected
   back onto the `WAFPolicy` objects that contributed to it.

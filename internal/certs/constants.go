@@ -33,6 +33,25 @@ const (
 	// certificate/key (CertKey/PrivateKeyKey) plus the CA bundle
 	// (CABundleKey) it uses to verify the controller's server certificate.
 	ProcessorClientCertSecretName = "gateway-protector-processor-client-cert"
+
+	// ProcessorServerCertSecretName holds the processor's ext_proc server
+	// certificate/key (CertKey/PrivateKeyKey) plus the CA bundle
+	// (CABundleKey) it uses to verify agentgateway's client certificate.
+	ProcessorServerCertSecretName = "gateway-protector-processor-server-cert"
+
+	// AgentgatewayClientCertSecretName holds the client certificate/key
+	// (CertKey/PrivateKeyKey) agentgateway presents when dialing the
+	// processor's ext_proc service, referenced by name from the chart's
+	// AgentgatewayPolicy (backend.tls.mtlsCertificateRef) - see
+	// charts/gateway-protector/templates/processor/backend-tls-policy.yaml.
+	// Its type is kubernetes.io/tls, as agentgateway requires.
+	AgentgatewayClientCertSecretName = "gateway-protector-agentgateway-client-cert"
+
+	// CABundleConfigMapName holds the current CA bundle (CABundleKey) for
+	// consumers that read trust bundles from a ConfigMap rather than a
+	// Secret - namely agentgateway's AgentgatewayPolicy
+	// backend.tls.caCertificateRefs, which only accepts ConfigMaps.
+	CABundleConfigMapName = "gateway-protector-ca-bundle"
 )
 
 // ControllerServerDNSName is the DNS name the controller's config-stream
@@ -47,6 +66,18 @@ const ControllerServerDNSName = "gateway-protector-controller-config-stream"
 // CA), but is still set to a stable, recognizable value for logs and any
 // future tightening.
 const ProcessorClientCommonName = "gateway-protector-processor-client"
+
+// ProcessorServerServiceName is the Service name the processor's ext_proc
+// server certificate is issued for (see DNSName), matching
+// controller.ProcessorServiceName - the backendRef every generated
+// AgentgatewayPolicy points ext_proc traffic at.
+const ProcessorServerServiceName = "gateway-protector-processor"
+
+// AgentgatewayClientCommonName is the identity presented by
+// agentgateway's client certificate when dialing the processor's ext_proc
+// service. Like ProcessorClientCommonName, it is not currently
+// pinned/verified beyond chaining to the CA.
+const AgentgatewayClientCommonName = "gateway-protector-agentgateway-client"
 
 // Validity durations and rotation lookahead, matching kubewarden's
 // admission-controller cert reconciler.

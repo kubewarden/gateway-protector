@@ -1,0 +1,37 @@
+# Encrypts (mTLS) agentgateway's ext_proc connection to the processor.
+# Unlike the AgentgatewayPolicy objects the controller generates (see
+# internal/controller/processor_config_wiring.go), this one is fully
+# static - it doesn't depend on any WAFPolicy/HTTPRoute/Gateway state - so
+# it's shipped directly as a chart template instead. It deliberately does
+# NOT carry the gateway-protector.kubewarden.io/managed=true label the
+# controller's own generated policies use: that label is both what scopes
+# the controller's cache/watch of AgentgatewayPolicy objects (see
+# CacheOptions in internal/controller/transform.go) and what its garbage
+# collection considers "mine" (see reconcileWiring) - this policy must
+# stay invisible to both, since nothing reconciles or owns it.
+#
+# targetRefs a Service (not a Gateway/HTTPRoute) so it composes with every
+# extProc traffic policy the controller generates, regardless of which
+# Gateway/HTTPRoute they target - agentgateway resolves backend policies
+# by the backendRef of the traffic.extProc policy itself, not by the
+# object the policy is attached to.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: {{ include "gateway-protector.fullname" . }}-processor-backend-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "gateway-protector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: processor
+spec:
+  targetRefs:
+    - kind: Service
+      group: ""
+      name: gateway-protector-processor
+  backend:
+    tls:
+      mtlsCertificateRef:
+        - name: gateway-protector-agentgateway-client-cert
+      caCertificateRefs:
+        - name: gateway-protector-ca-bundle
+      sni: gateway-protector-processor.{{ .Release.Namespace }}.svc

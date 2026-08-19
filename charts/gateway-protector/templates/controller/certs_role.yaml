@@ -1,8 +1,8 @@
 # Grants CertReconciler (internal/controller/cert_reconciler.go) access to
-# the CA and leaf-cert Secrets this chart creates in templates/certs.yaml,
-# scoped to the release namespace only - see CacheOptions in
-# internal/controller/transform.go for why the cache itself is also
-# namespace-scoped for Secrets.
+# the CA and leaf-cert Secrets, and the CA-bundle ConfigMap, this chart
+# creates in templates/certs.yaml, scoped to the release namespace only -
+# see CacheOptions in internal/controller/transform.go for why the cache
+# itself is also namespace-scoped for both kinds.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -16,6 +16,7 @@ rules:
       - ""
     resources:
       - secrets
+      - configmaps
     verbs:
       - get
       - list

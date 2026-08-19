@@ -49,7 +49,7 @@ func writeCertFiles(t *testing.T, dir string, cert, privateKey, caBundle []byte)
 func startMTLSConfigServer(t *testing.T, serverCertDir string) (*ConfigServer, grpc.DialOption) {
 	t.Helper()
 
-	tlsConfig, watcher, err := ServerTLSConfig(serverCertDir)
+	tlsConfig, watcher, err := certs.ServerTLSConfig(serverCertDir)
 	require.NoError(t, err)
 
 	server := NewConfigServer()
