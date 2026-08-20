@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -130,6 +132,37 @@ func TestWAFPolicyGatewayLifecycle(t *testing.T) {
 		}).
 		Assess("Benign request still succeeds", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			waitForStatus(ctx, t, cfg, httpbinNamespace, "", "/get", "200", statusTimeout)
+
+			return ctx
+		}).
+		Assess("Request and response bodies survive the WAF round trip", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// Regression check for a failure mode entirely invisible to
+			// every status-code-only assertion above: agentgateway's
+			// FULL_DUPLEX_STREAMED ext_proc mode rebuilds both the
+			// request body (before it reaches httpbin) and the response
+			// body (before it reaches the client) exclusively from the
+			// chunks the processor echoes back. A processor that stopped
+			// echoing, or never released chunks withheld pending a WAF
+			// verdict, still answers every ext_proc message correctly and
+			// every status code above would stay green - the body itself
+			// would just be silently truncated to nothing. See
+			// waitForPostBodyEcho and test/coraza-e2e for where this was
+			// first caught.
+			//
+			// The payload is padded past a single ext_proc chunk so the
+			// multi-chunk hold/release path (not just a single-message
+			// shortcut) is exercised on the request side. Content-Type:
+			// application/json means the *request* body is inspectable
+			// under @coraza.conf-recommended's default
+			// SecRequestBodyAccess On (held/released), while the
+			// *response* (also JSON - go-httpbin always replies as such)
+			// is outside the default SecResponseBodyMimeType allowlist
+			// (text/plain, text/html, text/xml) and so streams through
+			// the plain per-chunk echo path instead - between the two,
+			// this one request exercises both body-handling paths.
+			body := fmt.Sprintf(`{"message":"hello waf","padding":"%s"}`, strings.Repeat("a", 32*1024))
+
+			waitForPostBodyEcho(ctx, t, cfg, httpbinNamespace, "/anything", "application/json", body, trafficTimeout)
 
 			return ctx
 		}).
