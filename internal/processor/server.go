@@ -91,11 +91,95 @@ type requestState struct {
 	// logging in later phases (e.g. the block response).
 	authority string
 	path      string
+
+	// requestBody and responseBody track each direction's body stream
+	// across ext_proc messages: whether chunks are being withheld
+	// pending a WAF verdict, and whether the corresponding Coraza body
+	// phase has already been evaluated.
+	requestBody  bodyPhaseState
+	responseBody bodyPhaseState
 }
 
-// closeTransaction finalizes and releases the Coraza transaction, if any.
-// Safe to call multiple times and on a zero-value requestState.
+// bodyPhaseState tracks one direction's body stream (see requestState).
+//
+// In agentgateway's FULL_DUPLEX_STREAMED mode the proxied body is rebuilt
+// exclusively from the chunks this server echoes back, which is what makes
+// withholding possible at all: as long as the verdict is pending, received
+// chunks are simply not answered (agentgateway explicitly supports the
+// server buffering headers + body before responding), and are then either
+// all echoed (clean) or superseded by a single ImmediateResponse (blocked).
+type bodyPhaseState struct {
+	// holding is true while chunks (and, for the response direction,
+	// the headers answer) are withheld pending the body-phase verdict.
+	holding bool
+
+	// heldHeadersResponse is the deferred ResponseHeaders answer
+	// (response direction only): agentgateway commits the response head
+	// downstream as soon as that answer is sent, so it must be
+	// withheld for an ImmediateResponse at the phase-4 verdict to still
+	// be able to replace the response.
+	heldHeadersResponse *envoy_service_ext_proc_v3.ProcessingResponse
+
+	// held are the withheld body messages, one entry per message, each
+	// owed an echo answer once the verdict is clean.
+	held []heldChunk
+
+	// evaluated is true once the Coraza body phase for this direction
+	// has run (at end-of-stream, at a body-limit ProcessPartial
+	// evaluation, or synthetically for bodyless messages).
+	evaluated bool
+}
+
+// heldChunk is one withheld body message.
+type heldChunk struct {
+	data        []byte
+	endOfStream bool
+}
+
+// release ends the holding state, returning every response owed so far:
+// the deferred headers answer (if any) followed by one echo per withheld
+// chunk. It returns nil when nothing is owed, and is safe to call on a
+// stream that was never holding.
+func (bs *bodyPhaseState) release(echo func([]byte, bool) *envoy_service_ext_proc_v3.ProcessingResponse) []*envoy_service_ext_proc_v3.ProcessingResponse {
+	bs.holding = false
+
+	var out []*envoy_service_ext_proc_v3.ProcessingResponse
+
+	if bs.heldHeadersResponse != nil {
+		out = append(out, bs.heldHeadersResponse)
+		bs.heldHeadersResponse = nil
+	}
+
+	for _, chunk := range bs.held {
+		out = append(out, echo(chunk.data, chunk.endOfStream))
+	}
+	bs.held = nil
+
+	return out
+}
+
+// discard drops any withheld state without building responses for it.
+// Unlike release, no echo is owed: this is used when the transaction is
+// finalized by a block or engine-error ImmediateResponse (see
+// blockAndClose/failAndClose), which supersedes any response still owed
+// for withheld messages and terminates the whole stream - so the withheld
+// chunks (and, for the response direction, the deferred headers answer)
+// can be freed immediately instead of lingering, still referenced, until
+// the stream itself closes.
+func (bs *bodyPhaseState) discard() {
+	bs.holding = false
+	bs.heldHeadersResponse = nil
+	bs.held = nil
+}
+
+// closeTransaction finalizes and releases the Coraza transaction, if any,
+// and discards any withheld body state (see bodyPhaseState.discard) so a
+// block/fail response's superseded chunks don't outlive it. Safe to call
+// multiple times and on a zero-value requestState.
 func (r *requestState) closeTransaction(ctx context.Context, logger *slog.Logger) {
+	r.requestBody.discard()
+	r.responseBody.discard()
+
 	if r.tx == nil {
 		return
 	}
@@ -107,10 +191,12 @@ func (r *requestState) closeTransaction(ctx context.Context, logger *slog.Logger
 }
 
 // Process implements the main ext_proc bidirectional stream: it receives one
-// ProcessingRequest per HTTP phase (request headers, request body, response
-// headers, response body) and must send back exactly one ProcessingResponse
-// for each, in order (see the envoy.service.ext_proc.v3 proto docs embedded
-// in external_processor.pb.go).
+// ProcessingRequest per HTTP phase event (request headers, request body
+// chunks, request trailers, response headers, response body chunks,
+// response trailers) and answers each with zero or more
+// ProcessingResponses: zero while a body verdict is pending (the chunks
+// are withheld, see bodyPhaseState), several when a verdict releases
+// everything withheld at once.
 func (s *Server) Process(stream envoy_service_ext_proc_v3.ExternalProcessor_ProcessServer) error {
 	ctx := stream.Context()
 	var state requestState
@@ -126,29 +212,33 @@ func (s *Server) Process(stream envoy_service_ext_proc_v3.ExternalProcessor_Proc
 			return fmt.Errorf("ext_proc stream receive failed: %w", err)
 		}
 
-		resp := s.handleRequest(ctx, &state, req)
-
-		if err := stream.Send(resp); err != nil {
-			s.logger.ErrorContext(ctx, "Failed to send ext_proc response", slog.Any("error", err))
-			return fmt.Errorf("ext_proc stream send failed: %w", err)
+		for _, resp := range s.handleRequest(ctx, &state, req) {
+			if err := stream.Send(resp); err != nil {
+				s.logger.ErrorContext(ctx, "Failed to send ext_proc response", slog.Any("error", err))
+				return fmt.Errorf("ext_proc stream send failed: %w", err)
+			}
 		}
 	}
 }
 
 // handleRequest dispatches a single ProcessingRequest to the handler for its
 // phase.
-func (s *Server) handleRequest(ctx context.Context, state *requestState, req *envoy_service_ext_proc_v3.ProcessingRequest) *envoy_service_ext_proc_v3.ProcessingResponse {
+func (s *Server) handleRequest(ctx context.Context, state *requestState, req *envoy_service_ext_proc_v3.ProcessingRequest) []*envoy_service_ext_proc_v3.ProcessingResponse {
 	switch r := req.GetRequest().(type) {
 	case *envoy_service_ext_proc_v3.ProcessingRequest_RequestHeaders:
 		return s.processRequestHeaders(ctx, state, r.RequestHeaders)
 	case *envoy_service_ext_proc_v3.ProcessingRequest_RequestBody:
 		return s.processRequestBody(ctx, state, r.RequestBody)
+	case *envoy_service_ext_proc_v3.ProcessingRequest_RequestTrailers:
+		return s.processRequestTrailers(ctx, state)
 	case *envoy_service_ext_proc_v3.ProcessingRequest_ResponseHeaders:
 		return s.processResponseHeaders(ctx, state, r.ResponseHeaders)
 	case *envoy_service_ext_proc_v3.ProcessingRequest_ResponseBody:
 		return s.processResponseBody(ctx, state, r.ResponseBody)
+	case *envoy_service_ext_proc_v3.ProcessingRequest_ResponseTrailers:
+		return s.processResponseTrailers(ctx, state)
 	default:
 		s.logger.WarnContext(ctx, "Unhandled ext_proc request type", slog.String("type", req.String()))
-		return continueRequestHeaders()
+		return singleResponse(continueRequestHeaders())
 	}
 }

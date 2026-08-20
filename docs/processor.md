@@ -150,21 +150,77 @@ attribute on the "Processor ready" log line).
    logging, `:scheme`), resolves the WAF engine via the routing table above, and if one is attached,
    starts a Coraza transaction (`ProcessURI` + per-header `AddRequestHeader` + `ProcessRequestHeaders`).
    An interruption here blocks immediately.
-2. **Request body phase** — body chunks are streamed into the transaction (`WriteRequestBody`); on
-   `EndOfStream`, `ProcessRequestBody` runs the request-body-phase rules.
-3. **Response headers phase** — currently only re-runs Coraza's own response-header rules
-   (`ProcessResponseHeaders`). **DLP response inspection/redaction is not implemented**: WAF is a
-   request-phase concern (allow/block); DLP is meant to be a response-phase concern (redact/mask/
-   block sensitive data such as PII/PAN/secrets before it leaves the cluster), and that engine
-   doesn't exist yet.
+2. **Request body phase** — body chunks are fed into the transaction (`WriteRequestBody`) and, when
+   Coraza is going to inspect the body (`SecRequestBodyAccess On`), **withheld from the upstream**
+   until the phase-2 verdict (`ProcessRequestBody` at end-of-stream): a blocked request's body never
+   reaches the upstream at all, so the upstream can't act on the attack (e.g. execute the SQLi) even
+   though the client would have been answered 403 anyway. Clean bodies are then released in one go.
+   Memory for the withheld chunks is bounded by Coraza's own `SecRequestBodyLimit`: with
+   `ProcessPartial`, Coraza runs the phase-2 verdict on the partial body as soon as the limit is
+   reached, after which everything is released and the remainder streams through unbuffered; with
+   `Reject`, hitting the limit blocks outright.
+3. **Response headers phase** — feeds every response header into the transaction (RESPONSE_HEADERS
+   rules, e.g. CRS 95x leakage rules, need the values; the response body phase needs the
+   `Content-Type` to open Coraza's `SecResponseBodyMimeType` gate) and runs `ProcessResponseHeaders`.
+   When the response body *will* be inspected (`SecResponseBodyAccess On` and an allowlisted
+   Content-Type), the CONTINUE answer for this phase is **withheld** until the phase-4 verdict:
+   agentgateway commits the response head downstream the moment this answer is sent, after which a
+   block can no longer change the status. Responses Coraza won't inspect (e.g. `text/event-stream`,
+   images) are answered immediately and stream through unbuffered. **DLP response
+   inspection/redaction is not implemented**: WAF is a request-phase concern (allow/block); DLP is
+   meant to be a response-phase concern (redact/mask/block sensitive data such as PII/PAN/secrets
+   before it leaves the cluster), and that engine doesn't exist yet.
 4. **Response body phase** — same idea as request body, but response-phase rules
-   (`ProcessResponseBody`). Also **not** a DLP mutation point yet: this phase can currently only
-   block, it never redacts or otherwise mutates the response body.
+   (`ProcessResponseBody`), with the same withhold-until-verdict/`ProcessPartial` semantics as
+   phase 2. Also **not** a DLP mutation point yet: this phase can currently only block, it never
+   redacts or otherwise mutates the response body.
 
-Any interruption at any phase produces an Envoy `ImmediateResponse`: this short-circuits the
-request/response entirely (the client gets this response directly, nothing is forwarded to/from the
-upstream), with the interruption's status code (or 403 if unset), a `content-type: text/plain` body
-describing the matched rule ID/action, and an `x-waf-violation: 1` header.
+Two agentgateway-specific protocol details shape the implementation (both were caught by Coraza's
+own connector e2e suite, `test/coraza-e2e`, run via `make test-coraza-e2e`):
+
+- In `FULL_DUPLEX_STREAMED` mode (what the controller wires whenever body inspection is needed),
+  agentgateway rebuilds the proxied body **exclusively from the chunks the processor echoes back**
+  in `BodyMutation.streamed_response` — a plain CONTINUE with no body mutation silently *truncates*
+  the body. Every body chunk (including on streams with no WAF engine attached) is therefore echoed
+  back explicitly.
+- agentgateway force-enables trailer delivery in full-duplex mode and signals end-of-body in one of
+  three ways: a data chunk with `end_of_stream`, an empty body message with `end_of_stream`, or an
+  `HttpTrailers` message. All three run the pending body phase; trailers are acknowledged with a
+  matching `TrailersResponse` (a mismatched message type would be silently ignored by agentgateway).
+
+### Blocking
+
+When a rule interrupts the transaction — at any of the four phases — the processor answers
+agentgateway with an ext_proc `ImmediateResponse` message (the message type comes from Envoy's
+ext_proc protocol definitions, which agentgateway implements). agentgateway then stops proxying
+the exchange: a request-phase block never reaches the upstream, and a response-phase block
+discards the upstream's response instead of forwarding it. What the client receives is built
+from the interruption:
+
+- **Status code** — the rule's `deny,status:NNN` value, or `403` when the rule doesn't specify
+  one.
+- **An empty body** — the matched rule ID/action is logged server-side (the "WAF blocked
+  traffic" log line) but deliberately never disclosed to the client, since that would help an
+  attacker probe which rules fired.
+- **An `x-waf-violation: 1` header** — lets operators distinguish a WAF block from an
+  upstream-originated error with the same status code.
+
+Response-phase blocking is only possible because of the withholding described above: once the
+response-headers answer has been sent, agentgateway has already committed the response head to
+the client, and an `ImmediateResponse` arriving later can no longer replace the status.
+
+### Engine errors fail closed
+
+The calls above can also fail outright (an `error` return, distinct from an interruption) - for
+example, Coraza can no longer buffer body bytes because its storage is exhausted. This is not a
+rule verdict, but the processor treats it the same way as a block: it logs the error, closes the
+transaction, and answers with a plain `500` `ImmediateResponse` (empty body, no `x-waf-violation`
+header - that marker means a rule matched, and none did here).
+
+We fail closed here on purpose: letting the request/response through uninspected when the engine
+itself is malfunctioning would hand an attacker able to trigger that failure a free pass around
+the WAF. Refusing the traffic instead keeps that guarantee intact at the cost of availability for
+the affected request.
 
 ## Config stream
 

@@ -45,8 +45,9 @@ func TestProcessRequestHeaders_NilHeaders(t *testing.T) {
 	s := newTestServer(t, &config.Config{Directives: map[string]string{"noop": noopDirectives}})
 	var state requestState
 
-	resp := s.processRequestHeaders(context.Background(), &state, nil)
+	resps := s.processRequestHeaders(context.Background(), &state, nil)
 
+	resp := requireSingleResponse(t, resps)
 	require.IsType(t, &envoy_service_ext_proc_v3.ProcessingResponse_RequestHeaders{}, resp.GetResponse())
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
 	assert.Nil(t, state.tx)
@@ -56,7 +57,7 @@ func TestProcessRequestHeaders_EmptyHeaderMap(t *testing.T) {
 	s := newTestServer(t, &config.Config{Directives: map[string]string{"noop": noopDirectives}})
 	var state requestState
 
-	resp := s.processRequestHeaders(context.Background(), &state, &envoy_service_ext_proc_v3.HttpHeaders{})
+	resp := requireSingleResponse(t, s.processRequestHeaders(context.Background(), &state, &envoy_service_ext_proc_v3.HttpHeaders{}))
 
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
 	assert.Nil(t, state.tx)
@@ -86,7 +87,7 @@ func TestProcessRequestHeaders_MissingPseudoHeaders(t *testing.T) {
 			s := newTestServer(t, &config.Config{Directives: map[string]string{"noop": noopDirectives}})
 			var state requestState
 
-			resp := s.processRequestHeaders(context.Background(), &state, tt.headers)
+			resp := requireSingleResponse(t, s.processRequestHeaders(context.Background(), &state, tt.headers))
 
 			assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
 			assert.Nil(t, state.tx)
@@ -98,8 +99,8 @@ func TestProcessRequestHeaders_NoSnapshotLoadedContinues(t *testing.T) {
 	s := New(nil, nil)
 	var state requestState
 
-	resp := s.processRequestHeaders(context.Background(), &state,
-		httpHeaders(kv{":authority", "example.com"}, kv{":method", "GET"}, kv{":path", "/"}))
+	resp := requireSingleResponse(t, s.processRequestHeaders(context.Background(), &state,
+		httpHeaders(kv{":authority", "example.com"}, kv{":method", "GET"}, kv{":path", "/"})))
 
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
 	assert.Nil(t, state.tx)
@@ -116,8 +117,8 @@ func TestProcessRequestHeaders_RouteWithoutWAFEngineContinues(t *testing.T) {
 	})
 	var state requestState
 
-	resp := s.processRequestHeaders(context.Background(), &state,
-		httpHeaders(kv{":authority", "dlp-only.example.com"}, kv{":method", "GET"}, kv{":path", "/"}))
+	resp := requireSingleResponse(t, s.processRequestHeaders(context.Background(), &state,
+		httpHeaders(kv{":authority", "dlp-only.example.com"}, kv{":method", "GET"}, kv{":path", "/"})))
 
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
 	assert.Nil(t, state.tx)
@@ -127,7 +128,7 @@ func TestProcessResponseHeaders_NoTransactionContinues(t *testing.T) {
 	s := newTestServer(t, &config.Config{Directives: map[string]string{"noop": noopDirectives}})
 	var state requestState // state.tx is nil: no engine was attached at the headers phase.
 
-	resp := s.processResponseHeaders(context.Background(), &state, httpHeaders(kv{":status", "200"}))
+	resp := requireSingleResponse(t, s.processResponseHeaders(context.Background(), &state, httpHeaders(kv{":status", "200"})))
 
 	require.IsType(t, &envoy_service_ext_proc_v3.ProcessingResponse_ResponseHeaders{}, resp.GetResponse())
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetResponseHeaders().GetResponse().GetStatus())
@@ -137,17 +138,26 @@ func TestProcessResponseBody_NoTransactionContinues(t *testing.T) {
 	s := newTestServer(t, &config.Config{Directives: map[string]string{"noop": noopDirectives}})
 	var state requestState // state.tx is nil: no engine was attached at the headers phase.
 
-	resp := s.processResponseBody(context.Background(), &state, &envoy_service_ext_proc_v3.HttpBody{EndOfStream: true})
+	resp := requireSingleResponse(t, s.processResponseBody(context.Background(), &state, &envoy_service_ext_proc_v3.HttpBody{EndOfStream: true}))
 
 	require.IsType(t, &envoy_service_ext_proc_v3.ProcessingResponse_ResponseBody{}, resp.GetResponse())
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetResponseBody().GetResponse().GetStatus())
 }
 
-// TestHandleRequest_UnhandledMessageTypeContinues covers handleRequest's
-// default branch: a message type this processor doesn't have a case for
-// (e.g. trailers) must not crash the stream - it falls back to a
-// RequestHeaders CONTINUE, the same as an unset request.
-func TestHandleRequest_UnhandledMessageTypeContinues(t *testing.T) {
+// requireSingleResponse asserts a handler answered with exactly one
+// response and returns it.
+func requireSingleResponse(t *testing.T, resps []*envoy_service_ext_proc_v3.ProcessingResponse) *envoy_service_ext_proc_v3.ProcessingResponse {
+	t.Helper()
+	require.Len(t, resps, 1)
+
+	return resps[0]
+}
+
+// TestHandleRequest_TrailersAreAcknowledged covers the trailers branches:
+// agentgateway force-enables trailer delivery whenever a body mode is
+// FULL_DUPLEX_STREAMED, and expects a matching TrailersResponse back (a
+// mismatched message type is silently ignored on its side).
+func TestHandleRequest_TrailersAreAcknowledged(t *testing.T) {
 	s := newTestServer(t, &config.Config{Directives: map[string]string{"noop": noopDirectives}})
 	var state requestState
 
@@ -157,8 +167,15 @@ func TestHandleRequest_UnhandledMessageTypeContinues(t *testing.T) {
 		},
 	}
 
-	resp := s.handleRequest(context.Background(), &state, req)
+	resp := requireSingleResponse(t, s.handleRequest(context.Background(), &state, req))
+	require.IsType(t, &envoy_service_ext_proc_v3.ProcessingResponse_RequestTrailers{}, resp.GetResponse())
 
-	require.IsType(t, &envoy_service_ext_proc_v3.ProcessingResponse_RequestHeaders{}, resp.GetResponse())
-	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
+	req = &envoy_service_ext_proc_v3.ProcessingRequest{
+		Request: &envoy_service_ext_proc_v3.ProcessingRequest_ResponseTrailers{
+			ResponseTrailers: &envoy_service_ext_proc_v3.HttpTrailers{},
+		},
+	}
+
+	resp = requireSingleResponse(t, s.handleRequest(context.Background(), &state, req))
+	require.IsType(t, &envoy_service_ext_proc_v3.ProcessingResponse_ResponseTrailers{}, resp.GetResponse())
 }

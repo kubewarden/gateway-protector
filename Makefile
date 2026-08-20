@@ -36,7 +36,7 @@ all: controller processor
 .PHONY: test
 test: vet ## Run tests.
 	# TODO: decrease timeout once we move to self-hosted runners
-	$(GO_BUILD_ENV) CGO_ENABLED=1 KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(ENVTEST_DIR) -p path)" go test $$(go list ./... | grep -v /e2e) -race -test.v -timeout 30m -coverprofile coverage/cover.out -covermode=atomic
+	$(GO_BUILD_ENV) CGO_ENABLED=1 KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(ENVTEST_DIR) -p path)" go test $$(go list ./... | grep -v /test/) -race -test.v -timeout 30m -coverprofile coverage/cover.out -covermode=atomic
 
 .PHONY: helm-unittest
 helm-unittest:
@@ -46,6 +46,10 @@ helm-unittest:
 test-e2e: controller-image processor-image
 	# TODO: decrease timeout once we move to self-hosted runners
 	$(GO_BUILD_ENV) go test ./test/e2e/ -v -timeout 30m
+
+.PHONY: test-coraza-e2e
+test-coraza-e2e: ## Run Coraza's connector e2e suite through agentgateway + the ext_proc processor
+	go test ./test/coraza-e2e/ -v -timeout 15m
 
 .PHONY: fmt
 fmt: buf

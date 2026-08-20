@@ -2,7 +2,6 @@ package processor
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -131,14 +130,16 @@ func requestBodyMessage() *envoy_service_ext_proc_v3.ProcessingRequest {
 	}
 }
 
-func responseHeadersMessage(statusCode string) *envoy_service_ext_proc_v3.ProcessingRequest {
+func responseHeadersMessage(statusCode string, extraHeaders ...*envoy_config_core_v3.HeaderValue) *envoy_service_ext_proc_v3.ProcessingRequest {
+	headers := append(
+		[]*envoy_config_core_v3.HeaderValue{rawHeaderValue(":status", statusCode)},
+		extraHeaders...)
+
 	return &envoy_service_ext_proc_v3.ProcessingRequest{
 		Request: &envoy_service_ext_proc_v3.ProcessingRequest_ResponseHeaders{
 			ResponseHeaders: &envoy_service_ext_proc_v3.HttpHeaders{
 				Headers: &envoy_config_core_v3.HeaderMap{
-					Headers: []*envoy_config_core_v3.HeaderValue{
-						rawHeaderValue(":status", statusCode),
-					},
+					Headers: headers,
 				},
 			},
 		},
@@ -157,8 +158,9 @@ func responseBodyMessage(body []byte) *envoy_service_ext_proc_v3.ProcessingReque
 }
 
 // assertBlockedResponse asserts that resp is an ImmediateResponse carrying
-// the details blockResponse attaches: the HTTP status code, the plain-text
-// body identifying the blocking rule and action, and the diagnostic headers.
+// the details blockResponse attaches: the HTTP status code, an empty body
+// (rule details are deliberately not disclosed to the client - see
+// blockResponse), and the x-waf-violation marker header.
 func assertBlockedResponse(t *testing.T, resp *envoy_service_ext_proc_v3.ProcessingResponse, ruleID int) {
 	t.Helper()
 
@@ -166,15 +168,13 @@ func assertBlockedResponse(t *testing.T, resp *envoy_service_ext_proc_v3.Process
 	immediate := resp.GetImmediateResponse()
 
 	assert.EqualValues(t, 403, immediate.GetStatus().GetCode())
-	assert.Equal(t,
-		fmt.Sprintf("Request blocked by WAF - Rule ID: %d, Action: deny", ruleID),
-		string(immediate.GetBody()))
+	assert.Empty(t, immediate.GetBody(),
+		"block response must not disclose rule details (rule %d) to the client", ruleID)
 
 	headers := map[string]string{}
 	for _, opt := range immediate.GetHeaders().GetSetHeaders() {
 		headers[opt.GetHeader().GetKey()] = string(opt.GetHeader().GetRawValue())
 	}
-	assert.Equal(t, "text/plain", headers["content-type"])
 	assert.Equal(t, "1", headers["x-waf-violation"])
 }
 
@@ -568,6 +568,152 @@ func TestProcess_ResponseHeadersBlocked(t *testing.T) {
 	assertBlockedResponse(t, resp, 3000)
 }
 
+// TestProcess_ResponseHeaderValueBlocked exercises a phase:3 rule matching
+// on an actual RESPONSE_HEADERS value, which requires the response-headers
+// phase to feed every header into the transaction (not just :status).
+// Regression test for the gap caught by Coraza's connector e2e suite (see
+// test/coraza-e2e): response headers used to never be added to the
+// transaction at all, so rules like this one (or CRS's 95x leakage rules)
+// could never fire.
+func TestProcess_ResponseHeaderValueBlocked(t *testing.T) {
+	cfg := &config.Config{
+		Directives: map[string]string{
+			"blocklist": "SecRuleEngine On\n" +
+				`SecRule RESPONSE_HEADERS:pass "@rx leak" "id:3100,phase:3,t:lowercase,deny,status:403,msg:'response header blocked'"` + "\n",
+		},
+		Routes: []config.Route{
+			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
+		},
+	}
+	client := startTestServer(t, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.Process(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/")))
+	resp, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
+
+	require.NoError(t, stream.Send(requestBodyMessage()))
+	resp, err = stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestBody().GetResponse().GetStatus())
+
+	require.NoError(t, stream.Send(responseHeadersMessage("200", rawHeaderValue("pass", "leak"))))
+	resp, err = stream.Recv()
+	require.NoError(t, err)
+
+	assertBlockedResponse(t, resp, 3100)
+}
+
+// TestProcess_ResponseBodyBlockedViaMimeType exercises the standard (non
+// ctl-forced) way response bodies become inspectable: Coraza only
+// populates RESPONSE_BODY when the response's Content-Type is in the
+// SecResponseBodyMimeType allowlist, and it learns that Content-Type from
+// the response-headers phase. Regression test for the same gap as
+// TestProcess_ResponseHeaderValueBlocked: with response headers never fed
+// to the transaction, the mime-type gate never opened and phase-4 rules
+// silently never ran on real traffic.
+func TestProcess_ResponseBodyBlockedViaMimeType(t *testing.T) {
+	cfg := &config.Config{
+		Directives: map[string]string{
+			"blocklist": "SecRuleEngine On\n" +
+				"SecResponseBodyAccess On\n" +
+				"SecResponseBodyMimeType application/json\n" +
+				`SecRule RESPONSE_BODY "@contains malicious" "id:4100,phase:4,deny,status:403,msg:'response body blocked'"` + "\n",
+		},
+		Routes: []config.Route{
+			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
+		},
+	}
+	client := startTestServer(t, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.Process(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/")))
+	resp, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
+
+	require.NoError(t, stream.Send(requestBodyMessage()))
+	resp, err = stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestBody().GetResponse().GetStatus())
+
+	// The response body will be inspected (Content-Type is in the
+	// SecResponseBodyMimeType allowlist), so the ResponseHeaders answer
+	// is withheld until the phase-4 verdict: no response is owed yet.
+	require.NoError(t, stream.Send(responseHeadersMessage("200", rawHeaderValue("content-type", "application/json"))))
+
+	require.NoError(t, stream.Send(responseBodyMessage([]byte(`{"data":"malicious"}`))))
+	resp, err = stream.Recv()
+	require.NoError(t, err)
+
+	assertBlockedResponse(t, resp, 4100)
+}
+
+// TestProcess_CleanInspectableResponseBodyIsReleased is the clean-path
+// counterpart of TestProcess_ResponseBodyBlockedViaMimeType: while the
+// phase-4 verdict is pending, the ResponseHeaders answer and the body
+// chunks are withheld (agentgateway commits the response head downstream
+// as soon as the headers answer is sent, so answering early would make a
+// later block impossible); once the verdict is clean, everything owed is
+// released at once - the headers CONTINUE followed by one echo per body
+// message, carrying the original bytes in streamed_response.
+func TestProcess_CleanInspectableResponseBodyIsReleased(t *testing.T) {
+	cfg := &config.Config{
+		Directives: map[string]string{
+			"blocklist": "SecRuleEngine On\n" +
+				"SecResponseBodyAccess On\n" +
+				"SecResponseBodyMimeType application/json\n" +
+				`SecRule RESPONSE_BODY "@contains malicious" "id:4200,phase:4,deny,status:403"` + "\n",
+		},
+		Routes: []config.Route{
+			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
+		},
+	}
+	client := startTestServer(t, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.Process(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/")))
+	resp, err := stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
+
+	// Headers answer withheld: nothing to receive until the verdict.
+	require.NoError(t, stream.Send(responseHeadersMessage("200", rawHeaderValue("content-type", "application/json"))))
+
+	body := []byte(`{"data":"clean"}`)
+	require.NoError(t, stream.Send(responseBodyMessage(body)))
+
+	// Clean verdict: the deferred ResponseHeaders CONTINUE arrives
+	// first...
+	resp, err = stream.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetResponseHeaders().GetResponse().GetStatus())
+
+	// ...followed by the echo of the withheld body chunk.
+	resp, err = stream.Recv()
+	require.NoError(t, err)
+	streamed := resp.GetResponseBody().GetResponse().GetBodyMutation().GetStreamedResponse()
+	require.NotNil(t, streamed, "body chunk must be echoed via streamed_response")
+	assert.Equal(t, body, streamed.GetBody())
+	assert.True(t, streamed.GetEndOfStream())
+}
+
 // TestProcess_ResponseBodyBlocked exercises a phase:4 (response body) rule.
 // RESPONSE_BODY is only populated when the response Content-Type is in
 // Coraza's configured mime-type allowlist, or when a rule forces it via
@@ -603,10 +749,9 @@ func TestProcess_ResponseBodyBlocked(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestBody().GetResponse().GetStatus())
 
+	// ctl:forceResponseBodyVariable makes the body inspectable, so the
+	// ResponseHeaders answer is withheld until the phase-4 verdict.
 	require.NoError(t, stream.Send(responseHeadersMessage("200")))
-	resp, err = stream.Recv()
-	require.NoError(t, err)
-	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetResponseHeaders().GetResponse().GetStatus())
 
 	require.NoError(t, stream.Send(responseBodyMessage([]byte("this body is malicious"))))
 	resp, err = stream.Recv()
