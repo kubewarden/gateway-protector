@@ -63,6 +63,7 @@ import (
 
 	"github.com/kubewarden/gateway-protector/internal/processor"
 	"github.com/kubewarden/gateway-protector/internal/processor/config"
+	"github.com/kubewarden/gateway-protector/test/internal/containerlog"
 )
 
 const (
@@ -155,25 +156,6 @@ func startProcessor(t *testing.T, logger *slog.Logger) int {
 	require.True(t, ok, "listener address is not TCP")
 
 	return tcpAddr.Port
-}
-
-// containerLogsOnFailure streams a container's stdout/stderr into the test
-// log when (and only when) the test fails, to make triaging remote-CI
-// failures possible without re-running.
-func containerLogsOnFailure(t *testing.T, name string) *testcontainers.LogConsumerConfig {
-	t.Helper()
-
-	collector := &logCollector{}
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("=== %s container logs ===\n%s", name, collector.String())
-		}
-	})
-
-	return &testcontainers.LogConsumerConfig{
-		Opts:      []testcontainers.LogProductionOption{testcontainers.WithLogProductionTimeout(10 * time.Second)},
-		Consumers: []testcontainers.LogConsumer{collector},
-	}
 }
 
 // invalidQueryChars are characters RFC 3986 forbids unencoded in a query
@@ -300,7 +282,7 @@ func TestCorazaE2E(t *testing.T) {
 		testcontainers.WithHostPortAccess(processorPort),
 		testcontainers.WithExposedPorts(gatewayPort+"/tcp"),
 		testcontainers.WithWaitStrategy(wait.ForListeningPort(gatewayPort+"/tcp")),
-		testcontainers.WithLogConsumerConfig(containerLogsOnFailure(t, "agentgateway")),
+		testcontainers.WithLogConsumerConfig(containerlog.OnFailure(t, "agentgateway")),
 	)
 	testcontainers.CleanupContainer(t, gateway)
 	require.NoError(t, err, "failed to start agentgateway")

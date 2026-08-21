@@ -51,6 +51,10 @@ test-e2e: controller-image processor-image
 test-coraza-e2e: ## Run Coraza's connector e2e suite through agentgateway + the ext_proc processor
 	go test ./test/coraza-e2e/ -v -timeout 15m
 
+.PHONY: test-ftw
+test-ftw: ## Run the OWASP CRS regression suite (go-ftw) through agentgateway + the ext_proc processor.
+	go test ./test/ftw/ -v -timeout 30m
+
 .PHONY: fmt
 fmt: buf
 	$(GO_BUILD_ENV) go fmt ./...

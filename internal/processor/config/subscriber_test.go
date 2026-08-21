@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net"
 	"sync"
 	"testing"
@@ -224,4 +226,53 @@ func TestSubscriberSkipsDuplicateVersion(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 		// Expected: no second onChange call, but the duplicate still got acked.
 	}
+}
+
+// TestSubscriberForwardsCompileOptionsToCompile is a regression test for
+// SetCompileOptions: options set on a Subscriber must actually reach every
+// Compile call it makes (including the very first config it applies), not
+// just be stored and ignored.
+func TestSubscriberForwardsCompileOptionsToCompile(t *testing.T) {
+	subscriber, server := startTestSubscriber(t)
+
+	var buf bytes.Buffer
+	subscriber.SetCompileOptions(WithMatchedRuleWriter(&buf))
+
+	configJSON, err := json.Marshal(map[string]any{
+		"directives": map[string]string{
+			"a": "SecRuleEngine On\n" +
+				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403,log"` + "\n",
+		},
+		"routes": []map[string]any{
+			{"host": "example.com", "pathPrefix": "/", "waf": map[string]string{"engineKey": "a"}},
+		},
+	})
+	require.NoError(t, err)
+
+	server.push(&configstreamv1.ConfigSnapshot{Version: "v1", ConfigJson: configJSON})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	received := make(chan *Snapshot, 1)
+	go func() { _ = subscriber.Run(ctx, func(s *Snapshot) { received <- s }) }()
+
+	var snapshot *Snapshot
+	select {
+	case snapshot = <-received:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for the subscriber to apply the config")
+	}
+
+	waf, matched := snapshot.Match("example.com", "/")
+	require.True(t, matched)
+
+	tx := waf.NewTransaction()
+	defer tx.Close()
+
+	tx.ProcessURI("/?test=malicious", "GET", "HTTP/1.1")
+	interruption := tx.ProcessRequestHeaders()
+	require.NotNil(t, interruption)
+
+	assert.Contains(t, buf.String(), `[id "1000"]`)
 }

@@ -1,0 +1,528 @@
+version: "v0.0.0"
+meta:
+  engine: "coraza"
+  platform: "go"
+  annotations:
+    - purpose: "Overrides for the CRS regression suite running against gateway-protector's processor, fronted by agentgateway (test/ftw)"
+test_overrides:
+  # Tests not compatible with Coraza (proxy-agnostic: this is Coraza's own
+  # multipart parser behavior, true on any proxy fronting it).
+  #
+  # Verified against coraza-envoy-go-filter's tests/ftw/overrides.yml
+  # (https://github.com/anomalyco/coraza-envoy-go-filter, Apache-2.0),
+  # whose "Tests not compatible with Coraza" section documents the same
+  # engine-level cause; carried over as-is since it has nothing to do
+  # with which proxy fronts Coraza.
+  - rule_id: 922130
+    test_ids: [1, 2, 7]
+    reason: |
+      Multipart parsing tests. Rule 922130 is never reached: Coraza's own
+      multipart parser rejects the malformed body at parse time and
+      triggers rule 200003 (MULTIPART_STRICT_ERROR) instead - true
+      regardless of which proxy fronts Coraza.
+    output:
+      log:
+        expect_ids: [200002, 200003]
+
+  # go-ftw/corpus YAML quirk unrelated to proxy or routing: reproduced
+  # verbatim from the same override list (its "hacks" section) since the
+  # corpus/go-ftw versions are pinned identically here (CRS v4.25.0,
+  # go-ftw v2.4.0).
+  - rule_id: 941120
+    test_ids: [8]
+    reason: |
+      Redeclaring the request URI here (identical to the corpus's own
+      value - see
+      https://github.com/coreruleset/coreruleset/blob/v4.25.0/tests/regression/tests/REQUEST-941-APPLICATION-ATTACK-XSS/941120.yaml#L130)
+      is required for the test to pass; without it the match fails for
+      reasons neither this project nor the upstream override list this
+      was ported from could explain (possibly a go-ftw YAML-anchor/corpus
+      quirk unrelated to the proxy or WAF).
+    input:
+      uri: "/get?%20%20onthisisaverylongwordthathasmorethanfiftycharacters%20=vardata"
+
+  # Everything else coraza-envoy-go-filter's own overrides.yml documents -
+  # HTTP-protocol-level rejections (invalid methods/request
+  # lines/HTTP-0.9/dual Content-Length+Transfer-Encoding), the CONNECT/
+  # :authority routing cases, and the unexplained Referer-header-sanitizing
+  # claims - is deliberately NOT carried over here: those are about
+  # Envoy's own HTTP stack and config, not portable assumptions. This
+  # harness also doesn't force a Host header (see ftw_test.go - a
+  # catch-all route is used instead of per-host engine selection, unlike
+  # that project's filter), which independently removes the need for its
+  # entire "different because of our testing setup" override category
+  # (920270/920274/920280/920290/920350/931130/943110/980170: all
+  # artifacts of forcibly rewriting the Host header, which this harness
+  # never does). Real failures against agentgateway will be triaged and
+  # added here with their own freshly-verified reasons.
+
+  # Verified directly against a running agentgateway (its own access log),
+  # not carried over from any other connector's override list.
+  - rule_id: 920100
+    test_ids: [4, 5]
+    reason: |
+      Both tests use the CONNECT method to establish a tunnel (a valid one
+      to an IP:port, and a deliberately malformed one - a bare hostname
+      with no port - that Apache rejects with 400 as part of its own
+      CONNECT parsing). agentgateway is an API/L7 gateway, not a
+      forwarding proxy: it has no support for CONNECT tunneling at all
+      and answers every CONNECT request with a blanket 405 before the
+      request reaches ext_proc/the WAF, regardless of whether the
+      CONNECT target itself is well-formed.
+    output:
+      status: 405
+      log:
+        no_expect_ids: [920100]
+  - rule_id: 920100
+    test_ids: [8]
+    reason: |
+      A colon inside the request path (/get/index.html:80?...) is
+      rejected by Apache's own path-syntax validation (400) before the
+      request ever reaches mod_security. Neither agentgateway nor albedo
+      (this suite's upstream) perform that Apache-specific validation:
+      agentgateway forwards the request as-is and albedo answers 200, so
+      this test's assumption about backend path validation simply
+      doesn't hold in this stack.
+    output:
+      status: 200
+  - rule_id: 920100
+    test_ids: [16]
+    reason: |
+      The request line's URI is an absolute-form target with no path
+      (http://localhost); Apache/mod_security sees that literal URI and
+      rule 920100 matches it. agentgateway - like Envoy in the reference
+      connector's own overrides.yml (same test, same root cause) -
+      normalizes an absolute-form request-target down to path "/" before
+      ext_proc ever sees it, so rule 920100 (which pattern-matches on the
+      unnormalized URI) never fires, and the (harmless) request just
+      succeeds.
+    output:
+      status: 200
+      log:
+        no_expect_ids: [920100]
+
+  # Confirmed with a raw TCP probe sending the corpus's exact request
+  # bytes straight to a running agentgateway (see git history for the
+  # (removed) diagnostic test) - not inferred from the test description.
+  - rule_id: 921120
+    test_ids: [1, 2]
+    reason: |
+      Both tests' request-target contains literal, unencoded '<'/'>'
+      characters (e.g. "...<html>Shazam</html>"), which RFC 9110 forbids
+      in a request-target. A raw probe sending these exact bytes
+      confirmed agentgateway answers 400 Bad Request and closes the
+      connection before ext_proc/the WAF ever sees the request - the same
+      request-target strictness test/coraza-e2e's URI canonicalizer
+      exists to work around.
+    output:
+      status: 400
+      log:
+        no_expect_ids: [921120]
+
+  # Confirmed with a raw TCP probe sending a duplicated Connection header
+  # straight to a running agentgateway: the response was 200 and rule
+  # 920210 never fired.
+  - rule_id: 920210
+    test_ids: [2, 3, 4, 6, 7]
+    reason: |
+      These tests send a duplicated/conflicting Connection header value
+      (e.g. "Connection: keep-alive,keep-alive") for rule 920210 to
+      detect. Connection is a hop-by-hop header that RFC 7230 §6.1
+      requires intermediaries to process and not forward verbatim; a raw
+      probe confirmed agentgateway does not deliver the duplicated raw
+      value to the WAF unchanged, so the rule (which pattern-matches on
+      that raw value) never fires. This is standard HTTP/1.1 intermediary
+      behavior, not an agentgateway-specific quirk.
+    output:
+      status: 200
+      log:
+        no_expect_ids: [920210]
+
+  # Confirmed with raw TCP probes sending several of these exact request
+  # bytes straight to a running agentgateway: every one containing a raw,
+  # unencoded '<', '>', or '"' character anywhere in the request-target
+  # (or, for the Cookie-header cases, the header value) got a 400 Bad
+  # Request with the connection closed before ext_proc/the WAF ever ran -
+  # the same class of RFC 9110 request-target strictness as the 921120
+  # override above and test/coraza-e2e's URI canonicalizer. None of these
+  # rules can ever fire in this stack for these specific payloads, since
+  # the request never arrives. Grouped into one comment block since they
+  # share one root cause and one probe-confirmed reason, even though each
+  # needs its own list entry (go-ftw's override schema is one rule_id per
+  # entry).
+  - rule_id: 921210
+    test_ids: [1]
+    reason: &raw-invalid-chars-reason |
+      Request-target/header contains a raw, unencoded '<', '>', or '"'
+      character. Confirmed via a raw TCP probe: agentgateway answers 400
+      Bad Request and closes the connection before ext_proc/the WAF ever
+      sees the request (RFC 9110 forbids these characters unencoded in a
+      request-target; see also the 921120 override above).
+    output:
+      status: 400
+      log:
+        no_expect_ids: [921210]
+  - rule_id: 930120
+    test_ids: [9]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [930120]
+  - rule_id: 932236
+    test_ids: [21]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [932236]
+  - rule_id: 932240
+    test_ids: [9, 14, 15]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [932240]
+  - rule_id: 932250
+    test_ids: [5]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [932250]
+  - rule_id: 932260
+    test_ids: [28]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [932260]
+  - rule_id: 932371
+    test_ids: [1]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [932371]
+  - rule_id: 934100
+    test_ids: [13, 14, 23]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [934100]
+  - rule_id: 934101
+    test_ids: [4]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [934101]
+  - rule_id: 934130
+    test_ids: [7]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [934130]
+  - rule_id: 934160
+    test_ids: [7, 22]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [934160]
+  - rule_id: 941100
+    test_ids: [1]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [941100]
+  - rule_id: 941110
+    test_ids: [2]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [941110]
+  - rule_id: 941160
+    test_ids: [1]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [941160]
+  - rule_id: 941240
+    test_ids: [2]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [941240]
+  - rule_id: 942130
+    test_ids: [9]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [942130]
+  - rule_id: 943100
+    test_ids: [1]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [943100]
+  - rule_id: 949110
+    test_ids: [1, 5]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [949110]
+  - rule_id: 942500
+    test_ids: [1, 2]
+    reason: *raw-invalid-chars-reason
+    output:
+      status: 400
+      log:
+        no_expect_ids: [942500]
+
+  # agentgateway re-parses and re-serializes the Cookie header on every
+  # request to strip its own OIDC session cookies (any name prefixed
+  # "agw_oidc_"), regardless of whether OIDC is configured on the route
+  # (crates/agentgateway/src/proxy/httpproxy.rs:150,
+  # strip_request_cookies_by_prefix). Malformed cookie values don't
+  # survive that round-trip: a literal ';' inside a value truncates it
+  # (933100-89), and a value with no '=' or containing any non-ASCII
+  # byte drops the whole header entirely (932240-3/4, 941190-3,
+  # 942480-2, 941110-8, 942420-3/4, 942421-2) - all three shapes are
+  # invalid per RFC 6265 §4.2.1's cookie-pair/cookie-octet grammar
+  # anyway. This isn't a WAF blind spot with the attack still reaching
+  # the app: the same mutated request is what's forwarded upstream, so
+  # the application receives byte-identical values to what the WAF
+  # inspected (confirmed against a real backend). These tests assert on
+  # payload bytes that no longer exist anywhere in the request by the
+  # time it's processed - there's nothing left to detect.
+  #
+  # If any of these ever starts failing because the rule now fires,
+  # agentgateway has likely changed its cookie handling - re-verify and
+  # drop the affected override(s) rather than adjusting them.
+  - rule_id: 932240
+    test_ids: [3, 4]
+    reason: &agentgateway-cookie-dropped-reason |
+      agentgateway strips this request's Cookie header entirely before
+      forwarding it - see the block comment above for why this isn't a
+      security-relevant gap.
+    output:
+      status: 200
+      log:
+        no_expect_ids: [932240]
+  - rule_id: 933100
+    test_ids: [89]
+    reason: |
+      agentgateway truncates this request's Cookie header (its literal
+      ';' is misread as a cookie-pair separator) before forwarding it -
+      see the block comment above for why this isn't a security-relevant
+      gap.
+    output:
+      status: 200
+      log:
+        no_expect_ids: [933100]
+  - rule_id: 941110
+    test_ids: [8]
+    reason: *agentgateway-cookie-dropped-reason
+    output:
+      status: 200
+      log:
+        no_expect_ids: [941110]
+  - rule_id: 941190
+    test_ids: [3]
+    reason: *agentgateway-cookie-dropped-reason
+    output:
+      status: 200
+      log:
+        no_expect_ids: [941190]
+  - rule_id: 942420
+    test_ids: [3, 4]
+    reason: *agentgateway-cookie-dropped-reason
+    output:
+      status: 200
+      log:
+        no_expect_ids: [942420]
+  - rule_id: 942421
+    test_ids: [2]
+    reason: *agentgateway-cookie-dropped-reason
+    output:
+      status: 200
+      log:
+        no_expect_ids: [942421]
+  - rule_id: 942480
+    test_ids: [2]
+    reason: *agentgateway-cookie-dropped-reason
+    output:
+      status: 200
+      log:
+        no_expect_ids: [942480]
+
+  # Confirmed with direct raw TCP probes against a running agentgateway.
+  - rule_id: 920270
+    test_ids: [4]
+    reason: &agentgateway-no-authority-reason |
+      Host header value is unusual (literal "%00"/"%1F" text, or empty) in
+      a way Apache rejects with 400 as part of its own Host validation.
+      agentgateway's own authority/Host resolution rejects these the same
+      way but with a different status: a direct probe got "503 Service
+      Unavailable: processing failed: no authority or host" - the request
+      never reaches ext_proc/the WAF either way.
+    output:
+      status: 503
+      log:
+        no_expect_ids: [920270]
+  - rule_id: 920274
+    test_ids: [1]
+    reason: *agentgateway-no-authority-reason
+    output:
+      status: 503
+      log:
+        no_expect_ids: [920274]
+  - rule_id: 920290
+    test_ids: [1, 4]
+    reason: *agentgateway-no-authority-reason
+    output:
+      status: 503
+      log:
+        no_expect_ids: [920290]
+  - rule_id: 920280
+    test_ids: [1]
+    reason: |
+      HTTP/1.0 request with no Host header at all (optional in HTTP/1.0).
+      A direct probe confirmed agentgateway requires a Host/authority
+      regardless of protocol version and answers "503 Service
+      Unavailable: processing failed: no authority or host" - the request
+      never reaches ext_proc/the WAF.
+    output:
+      status: 503
+      log:
+        no_expect_ids: [920280]
+  - rule_id: 920430
+    test_ids: [8]
+    reason: |
+      HTTP/4.0 (an invalid protocol version) is directly rejected by
+      agentgateway with 400 Bad Request before ext_proc/the WAF ever
+      sees the request - confirmed with a direct probe.
+    output:
+      status: 400
+      log:
+        no_expect_ids: [920430]
+  - rule_id: 920610
+    test_ids: [2]
+    reason: |
+      A raw URL fragment ("/#fragment") in the request-target is rejected
+      by Apache with 400. A direct probe confirmed agentgateway instead
+      treats '#' as a literal path character and forwards the request
+      normally (200, no rule fired) - unlike Apache, it doesn't perform
+      fragment-in-request-target validation.
+    output:
+      status: 200
+
+  # Confirmed directly: our own processor's matched-rule log shows rule
+  # 920620 correctly firing for this request (Inbound Anomaly Score
+  # Exceeded, contributed by 920620). The original test expects it NOT
+  # to fire because on Apache/httpd, two "Content-Type" request headers
+  # get concatenated into a single header before mod_security ever sees
+  # them - so the "multiple headers" condition never exists there.
+  # agentgateway does not perform that concatenation: Coraza correctly
+  # sees two distinct Content-Type headers and rule 920620 (correctly,
+  # per its own stated purpose) fires. This is the opposite of an
+  # under-detection gap - CRS's own defense-in-depth intent is *more*
+  # fully realized on this stack than on the Apache baseline the test
+  # was written against.
+  - rule_id: 920620
+    test_ids: [1]
+    reason: |
+      httpd concatenates duplicate Content-Type headers into one before
+      mod_security sees them, so rule 920620 never fires there. agentgateway
+      does not perform that concatenation, so Coraza correctly detects the
+      genuinely-duplicate headers and rule 920620 fires as designed - the
+      opposite of a detection gap.
+    output:
+      status: 200
+      log:
+        expect_ids: [920620]
+
+  # Confirmed with direct raw TCP probes against a running agentgateway,
+  # plus cross-checking the actual matched-rule log the processor wrote.
+  - rule_id: 920171
+    test_ids: [2, 3]
+    reason: |
+      Rule 920171 is a chain requiring both REQUEST_METHOD to be GET/HEAD
+      AND a Transfer-Encoding request header to be present. agentgateway
+      strips Transfer-Encoding as a hop-by-hop header
+      (crates/agentgateway/src/proxy/httpproxy.rs:674, HOP_HEADERS at
+      :3499-3509, removed at :3555-3557) before ext_proc is ever invoked
+      (:884 -> apply_request_policies -> :190-201), after already
+      de-chunking the request body itself. Coraza therefore sees the
+      GET/HEAD method and the (fully delivered) body - confirmed: rule
+      920640 "Content-Type header missing from request with body" fires
+      for this same request - but the second chain condition can never be
+      satisfied, since the header that triggers it is gone by the time
+      ext_proc runs. This is standard RFC 7230 intermediary behavior
+      inherent to any proxy-fronted WAF, not an agentgateway defect or a
+      processor wiring gap - the reference connector's own overrides.yml
+      independently hit the identical wall for Envoy ("Envoy doesn't read
+      the body on HEAD request and removes the TE header on GET").
+    output:
+      status: 200
+      log:
+        no_expect_ids: [920171]
+
+  # Confirmed: our own processor's matched-rule log shows rule 932207
+  # firing correctly for this exact request (RCE Bypass Technique,
+  # capturing "$u" from the Referer header). Only the *variable name*
+  # go-ftw sees in the log differs by letter case.
+  - rule_id: 932207
+    test_ids: [7]
+    reason: |
+      Rule 932207 fires correctly - confirmed in our own matched-rule
+      log. The only discrepancy is that agentgateway forwards header
+      *names* lowercased (Rust's http::HeaderName canonicalizes to
+      lowercase; ext_proc/headers.rs serializes via k.to_string()) -
+      empirically confirmed with a temporary debug patch logging every
+      header the processor received (sent "Accept:"/"Cookie:", processor
+      received "accept"/"cookie"). So Coraza's own %{MATCHED_VAR_NAME}
+      renders as "REQUEST_HEADERS:referer" instead of the corpus's
+      "REQUEST_HEADERS:Referer" - detection itself is unaffected, since
+      Coraza's header lookup is case-insensitive. match_regex (not
+      no_expect_ids/expect_ids) is used here specifically to keep
+      verifying everything else the original test checks - the captured
+      data ($u), the source variable, and the fully t:urlDecodeUni-decoded
+      value - tolerating only the letter case. This is the only test in
+      the entire corpus whose match_regex embeds a mixed-case header name.
+    output:
+      log:
+        match_regex: 'Matched Data: \$u found within REQUEST_HEADERS:[Rr]eferer: #x=foo;cat\$u /etc\$u/passwd'
+
+  # Confirmed with a raw TCP probe replicating go-ftw's own request-line
+  # serialization for an empty Version (ftwhttp.RequestLine.ToString()
+  # produces "GET / \r\n" - no HTTP version token at all, a true HTTP/0.9
+  # simple-request).
+  - rule_id: 920430
+    test_ids: [5]
+    reason: |
+      The corpus's own description says this test's expect_error:true
+      exists because "go-ftw currently can't handle the generated
+      response" from a backend that plays along with HTTP/0.9 (producing
+      a malformed response that breaks the client's parser, causing a
+      premature EOF). A raw probe sending byte-for-byte the same request
+      confirmed agentgateway instead rejects it outright with a clean,
+      well-formed "400 Bad Request" (proper status line, Content-Length:
+      0, connection closed) before ext_proc/the WAF ever runs - so go-ftw's
+      client parses the response fine and expect_error's precondition
+      (a client-side parse/connection error) never arises. The request
+      never reaches the WAF either way.
+    output:
+      status: 400
+      log:
+        no_expect_ids: [920430]

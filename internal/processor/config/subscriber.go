@@ -37,6 +37,13 @@ type Subscriber struct {
 	logger       *slog.Logger
 	dialOpts     []grpc.DialOption
 
+	// compileOpts is forwarded to every Compile call this Subscriber
+	// makes (see SetCompileOptions) - e.g. WithMatchedRuleWriter, to
+	// additionally emit ModSecurity-format matched-rule log lines for
+	// every config this Subscriber ever compiles, including on hot
+	// reload.
+	compileOpts []CompileOption
+
 	lastVersion string
 }
 
@@ -67,6 +74,15 @@ func NewSubscriber(address, subscriberID string, logger *slog.Logger, creds cred
 		logger:       logger,
 		dialOpts:     opts,
 	}
+}
+
+// SetCompileOptions sets the CompileOptions this Subscriber passes to
+// every Compile call it makes from here on (including for configs
+// received after this call, on hot reload) and returns s, so it can be
+// chained onto NewSubscriber. Not safe to call concurrently with Run.
+func (s *Subscriber) SetCompileOptions(opts ...CompileOption) *Subscriber {
+	s.compileOpts = opts
+	return s
 }
 
 // Run dials the controller and streams config snapshots until ctx is
@@ -168,7 +184,7 @@ func (s *Subscriber) applySnapshot(ctx context.Context, snapshot *configstreamv1
 		return &configstreamv1.ConfigAck{Version: version, Applied: false, Error: err.Error()}
 	}
 
-	compiled, err := Compile(cfg, s.logger)
+	compiled, err := Compile(cfg, s.logger, s.compileOpts...)
 	if err != nil {
 		s.logger.ErrorContext(ctx, "Failed to compile config from controller, keeping previous config",
 			slog.String("version", version), slog.Any("error", err))

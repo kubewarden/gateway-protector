@@ -41,6 +41,7 @@ type Config struct {
 	EnableReflection    bool
 	ConfigStreamCertDir string
 	ExtProcCertDir      string
+	WAFMatchedRulesLog  string
 }
 
 // parseFlags binds and parses the processor's command-line flags into a
@@ -68,6 +69,12 @@ func parseFlags() Config {
 		"Directory containing this processor's ext_proc server certificate (tls.crt, tls.key) and the CA "+
 			"bundle (ca.crt) used to verify agentgateway's client certificate. If unset, the ext_proc service "+
 			"is served in plaintext.")
+	flag.StringVar(&cfg.WAFMatchedRulesLog, "waf-matched-rules-log", "",
+		"Path to additionally append every matched WAF rule to, one per line, in ModSecurity's own log "+
+			"format (ErrorLog) rather than this processor's structured log. For tooling that expects that "+
+			"format, e.g. go-ftw or ModSecurity-log-aware SIEM/blocking tools. The file is "+
+			"created if missing and appended to if it exists. If unset (the default), no such file is written; "+
+			"matched rules are still logged in the processor's normal structured log either way.")
 	flag.Parse()
 
 	if cfg.SubscriberID == "" {
@@ -162,6 +169,18 @@ func run() int {
 	}
 
 	subscriber := config.NewSubscriber(cfg.ConfigServerAddress, cfg.SubscriberID, logger, configStreamCreds(cfg.ConfigStreamCertDir))
+
+	if cfg.WAFMatchedRulesLog != "" {
+		matchedRulesFile, err := os.OpenFile(cfg.WAFMatchedRulesLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			logger.ErrorContext(ctx, "Failed to open --waf-matched-rules-log", slog.String("path", cfg.WAFMatchedRulesLog), slog.Any("error", err))
+			return 1
+		}
+		defer matchedRulesFile.Close()
+
+		subscriber.SetCompileOptions(config.WithMatchedRuleWriter(matchedRulesFile))
+	}
+
 	go func() {
 		if err := subscriber.Run(ctx, onChange); err != nil {
 			logger.ErrorContext(ctx, "Config stream subscriber stopped", slog.Any("error", err))
@@ -186,6 +205,7 @@ func run() int {
 		slog.String("config-server-address", cfg.ConfigServerAddress),
 		slog.Bool("config-stream-mtls", cfg.ConfigStreamCertDir != ""),
 		slog.Bool("ext-proc-mtls", cfg.ExtProcCertDir != ""),
+		slog.Bool("waf-matched-rules-log", cfg.WAFMatchedRulesLog != ""),
 		slog.String("crs-version", config.EmbeddedCRSVersion()))
 	if err := grpcServer.Serve(lis); err != nil {
 		logger.ErrorContext(ctx, "gRPC server failed", slog.Any("error", err))

@@ -1,6 +1,9 @@
 package config
 
 import (
+	"bytes"
+	"strings"
+	"sync"
 	"testing"
 
 	ctypes "github.com/corazawaf/coraza/v3/types"
@@ -207,4 +210,114 @@ func TestSnapshotCloseThenNewTransactionStillWorks(t *testing.T) {
 		assert.Equal(t, 1000, interruption.RuleID)
 		assert.Equal(t, 403, interruption.Status)
 	})
+}
+
+// TestCompileWithMatchedRuleWriter is a regression test for
+// WithMatchedRuleWriter: a matched rule must produce a ModSecurity-format
+// ("ErrorLog") line - carrying `[id "NNN"]` for the rule that fired - on
+// the configured writer, in addition to (not instead of) the normal
+// structured slog line. This is the format go-ftw (see test/ftw) and
+// ModSecurity-log-aware tooling expect.
+func TestCompileWithMatchedRuleWriter(t *testing.T) {
+	cfg := &Config{
+		Directives: map[string]string{
+			"blocklist": "SecRuleEngine On\n" +
+				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403,log,msg:'blocked by test rule'"` + "\n",
+		},
+		Routes: []Route{
+			{Host: "example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "blocklist"}},
+		},
+	}
+
+	require.NoError(t, Validate(cfg))
+
+	var buf bytes.Buffer
+
+	snapshot, err := Compile(cfg, nil, WithMatchedRuleWriter(&buf))
+	require.NoError(t, err)
+
+	waf, matched := snapshot.Match("example.com", "/")
+	require.True(t, matched)
+	require.NotNil(t, waf)
+
+	tx := waf.NewTransaction()
+	defer tx.Close()
+
+	tx.ProcessURI("/?test=malicious", "GET", "HTTP/1.1")
+	interruption := tx.ProcessRequestHeaders()
+	require.NotNil(t, interruption)
+
+	assert.Contains(t, buf.String(), `[id "1000"]`)
+}
+
+// TestCompileWithMatchedRuleWriter_ConcurrentEnginesAreSafe exercises
+// WithMatchedRuleWriter's concurrency contract: a single writer shared
+// across multiple engines (and, within one engine, concurrent
+// transactions) must not corrupt interleaved writes - see syncWriter. Runs
+// under `go test -race`.
+func TestCompileWithMatchedRuleWriter_ConcurrentEnginesAreSafe(t *testing.T) {
+	const rule = `SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403,log,msg:'blocked by test rule'"` + "\n"
+
+	cfg := &Config{
+		Directives: map[string]string{
+			"engine-a": "SecRuleEngine On\n" + rule,
+			"engine-b": "SecRuleEngine On\n" + rule,
+		},
+		Routes: []Route{
+			{Host: "a.example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "engine-a"}},
+			{Host: "b.example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "engine-b"}},
+		},
+	}
+
+	require.NoError(t, Validate(cfg))
+
+	var buf syncBuffer
+
+	snapshot, err := Compile(cfg, nil, WithMatchedRuleWriter(&buf))
+	require.NoError(t, err)
+
+	trigger := func(host string) {
+		waf, matched := snapshot.Match(host, "/")
+		require.True(t, matched)
+
+		tx := waf.NewTransaction()
+		defer tx.Close()
+
+		tx.ProcessURI("/?test=malicious", "GET", "HTTP/1.1")
+		tx.ProcessRequestHeaders()
+	}
+
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(2)
+		go func() { defer wg.Done(); trigger("a.example.com") }()
+		go func() { defer wg.Done(); trigger("b.example.com") }()
+	}
+	wg.Wait()
+
+	assert.Equal(t, 40, strings.Count(buf.String(), `[id "1000"]`))
+}
+
+// syncBuffer wraps bytes.Buffer with a mutex so the race detector doesn't
+// flag TestCompileWithMatchedRuleWriter_ConcurrentEnginesAreSafe's own
+// reads (String()) racing with concurrent Write calls - a test-harness
+// concern distinct from what's under test (Compile's internal syncWriter,
+// which serializes the writes themselves).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.buf.String()
 }

@@ -24,6 +24,7 @@ replica over a gRPC stream it serves (see `internal/controller/processorconfig` 
 | `--grpc-reflection`         | `false` | Enable gRPC server reflection (local debugging only).                                                   |
 | `--config-stream-cert-dir`  | (none)  | Directory with this replica's client certificate/key and the CA bundle for mTLS on the config stream - see [Config stream](#config-stream). Unset dials in plaintext. |
 | `--ext-proc-cert-dir`       | (none)  | Directory with this replica's ext_proc server certificate/key and the CA bundle for mTLS with agentgateway - see [ext_proc mTLS](#ext_proc-mtls). Unset serves in plaintext. |
+| `--waf-matched-rules-log`   | (none)  | Path to additionally append every matched WAF rule to, one per line, in ModSecurity's own log format (`MatchedRule.ErrorLog()`) rather than this processor's structured log - see [Matched-rule logging](#matched-rule-logging). Unset writes no such file; matched rules are still logged in the structured log either way. |
 
 A gRPC health service (`grpc.health.v1.Health`) is always registered on its own plaintext listener
 (`--health-bind-address`), separate from the ext_proc service itself: Kubernetes' native gRPC probes
@@ -221,6 +222,71 @@ We fail closed here on purpose: letting the request/response through uninspected
 itself is malfunctioning would hand an attacker able to trigger that failure a free pass around
 the WAF. Refusing the traffic instead keeps that guarantee intact at the cost of availability for
 the affected request.
+
+## Matched-rule logging
+
+Every matched rule is always logged in the processor's normal structured log (the `WAF rule
+triggered` line, tagged with `engine_key`/`rule_id`/`severity`/etc. - see `newErrorCallback` in
+`internal/processor/config/compile.go`).
+
+`--waf-matched-rules-log=<path>` additionally appends the same match, one per line, in
+ModSecurity's own log format instead (Coraza's `MatchedRule.ErrorLog()`, e.g. `[client "10.0.0.1"]
+... [id "941100"] ...`). This is a second, differently-shaped sink alongside the structured log,
+not a replacement for it - the flag is opt-in and off by default. It exists for tooling that
+expects that specific format rather than structured JSON/text:
+
+- **go-ftw**, the CRS regression test runner (see [Testing against the CRS regression
+  suite](#testing-against-the-crs-regression-suite) below): it correlates each test's request with
+  the rule IDs this file records to verify the exact rule fired, not just that *some* rule blocked
+  the request.
+- Existing ModSecurity-log-aware operational tooling (fail2ban-style blockers, SIEM parsers) that
+  already knows how to parse this format.
+
+The file is created if missing and appended to if it already exists; a single processor instance's
+engines (and their concurrent transactions) all share it safely.
+
+## Testing against the CRS regression suite
+
+`make test-ftw` runs the OWASP Core Rule Set's own regression suite - [go-ftw](https://github.com/coreruleset/go-ftw),
+the CRS project's official test runner - against this processor, fronted by a real agentgateway
+instance (see `test/ftw`). This is the same suite every other CRS connector (Envoy, nginx, Apache
+modules, etc.) uses to substantiate a "CRS compliant" claim, run here through the actual stack this
+project ships rather than directly against Coraza.
+
+- **Topology**: go-ftw (a CLI, run on the host) sends each test's request to a real agentgateway
+  container, which calls this processor over ext_proc exactly as in production, fronting a
+  purpose-built test backend ([albedo](https://github.com/coreruleset/albedo)).
+- **Corpus version pinning**: the test corpus (the actual attack/benign request definitions) is
+  downloaded from the CRS project's GitHub releases at the exact version this module's
+  `github.com/corazawaf/coraza-coreruleset` dependency vendors (see `go.mod`) - the rules under
+  test and the tests themselves can never silently drift apart.
+- **Detection-only, log-correlated**: the directive block compiled for this suite forces
+  `SecRuleEngine DetectionOnly` (see `test/ftw/testdata/crs-ftw-setup.conf`), so go-ftw verifies
+  *which* rule fired by correlating a per-request marker header against the
+  `--waf-matched-rules-log` file (see [Matched-rule logging](#matched-rule-logging) above) rather
+  than asserting on the HTTP response for most tests.
+- **Platform overrides**: `test/ftw/testdata/overrides.yml` lists the corpus tests that can't pass
+  unmodified here, each with its reason and the evidence behind it - typically agentgateway
+  rejecting or normalizing a request before ext_proc runs, or Coraza behavior that holds whichever
+  proxy fronts it.
+
+### Known limitation: agentgateway can drop or corrupt Cookie header values
+
+agentgateway re-parses and re-serializes every request's `Cookie` header to strip its own OIDC
+session cookies (any name prefixed `agw_oidc_`) - regardless of whether OIDC is configured anywhere
+in the deployment (`crates/agentgateway/src/proxy/httpproxy.rs:150`, inside
+`apply_request_policies`). Malformed values don't survive that round-trip: a literal `;` inside a
+value truncates it (misread as a cookie-pair separator), and a value with no `=` or containing any
+non-ASCII byte drops the whole header entirely - all three shapes are invalid per RFC 6265
+§4.2.1's `cookie-pair`/`cookie-octet` grammar regardless.
+
+This is not a WAF blind spot with the attack still reaching the application: the same `Request`
+object `apply_request_policies` mutates is what's later forwarded to the backend, so the
+application receives byte-identical values to what the WAF inspected (confirmed against a real
+backend). The CRS regression tests this affects are asserting on payload bytes that no longer
+exist anywhere in the request by the time it's processed - see
+`test/ftw/testdata/overrides.yml`'s cookie-related overrides for the affected rules/tests and the
+file:line evidence.
 
 ## Config stream
 

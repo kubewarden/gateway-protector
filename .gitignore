@@ -9,3 +9,7 @@ tilt-settings.yaml
 
 # e2e cluster logs
 test/e2e/logs
+
+# Downloaded CRS regression test corpus (see test/ftw/ftw_test.go's
+# downloadCRSTestCorpus), cached per CRS version
+test/ftw/.corpus-cache
