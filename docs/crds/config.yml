@@ -7,4 +7,25 @@ processor:
 
 render:
   # Version of Kubernetes to use when generating links to Kubernetes API documentation.
-  kubernetesVersion: "1.36"
+  # renovate: datasource=github-releases depName=kubernetes/kubernetes extractVersion=^v(?<version>\d+\.\d+)\.\d+$
+  kubernetesVersion: "1.37"
+  # Gateway API types that the API uses but does not define. Without these
+  # entries, the generator links to sections that do not exist. The links
+  # point to the main branch of the Gateway API reference, so they do not
+  # change when go.mod updates sigs.k8s.io/gateway-api.
+  knownTypes:
+    - name: Group
+      package: sigs.k8s.io/gateway-api/apis/v1
+      link: https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#group
+    - name: Kind
+      package: sigs.k8s.io/gateway-api/apis/v1
+      link: https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#kind
+    - name: Namespace
+      package: sigs.k8s.io/gateway-api/apis/v1
+      link: https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#namespace
+    - name: ObjectName
+      package: sigs.k8s.io/gateway-api/apis/v1
+      link: https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#objectname
+    - name: SectionName
+      package: sigs.k8s.io/gateway-api/apis/v1
+      link: https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#sectionname

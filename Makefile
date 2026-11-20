@@ -1,13 +1,17 @@
 # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools
-CONTROLLER_TOOLS_VERSION := v0.21.0
-ENVTEST_VERSION := release-0.24
-ENVTEST_K8S_VERSION := 1.33.0
+CONTROLLER_TOOLS_VERSION := v0.23.0
+# setup-envtest has no releases. Use the release branch of the controller-runtime version in go.mod,
+# as the kubebuilder scaffold does. For example, v0.25.2 gives release-0.25.
+ENVTEST_VERSION ?= $(shell go list -m -f '{{.Version}}' sigs.k8s.io/controller-runtime | sed -E 's/^v([0-9]+)\.([0-9]+)\..*/release-\1.\2/')
+# Use the Kubernetes version of the k8s.io/api version in go.mod. For example, v0.37.2 gives 1.37.
+# setup-envtest installs the latest patch release of that Kubernetes version.
+ENVTEST_K8S_VERSION ?= $(shell go list -m -f '{{.Version}}' k8s.io/api | sed -E 's/^v0\.([0-9]+)\..*/1.\1/')
 # renovate: datasource=github-releases depName=losisin/helm-values-schema-json
-HELM_VALUES_SCHEMA_JSON_VERSION := v2.3.1
+HELM_VALUES_SCHEMA_JSON_VERSION := v2.6.0
 # renovate: datasource=github-releases depName=golangci/golangci-lint
-GOLANGCI_LINT_VERSION ?= v2.12.1
+GOLANGCI_LINT_VERSION ?= v2.15.0
 # renovate: datasource=github-releases depName=bufbuild/buf
-BUF_VERSION ?= v1.72.0
+BUF_VERSION ?= v1.75.0
 
 CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)

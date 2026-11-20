@@ -24,23 +24,6 @@ test_overrides:
       log:
         expect_ids: [200002, 200003]
 
-  # go-ftw/corpus YAML quirk unrelated to proxy or routing: reproduced
-  # verbatim from the same override list (its "hacks" section) since the
-  # corpus/go-ftw versions are pinned identically here (CRS v4.25.0,
-  # go-ftw v2.4.0).
-  - rule_id: 941120
-    test_ids: [8]
-    reason: |
-      Redeclaring the request URI here (identical to the corpus's own
-      value - see
-      https://github.com/coreruleset/coreruleset/blob/v4.25.0/tests/regression/tests/REQUEST-941-APPLICATION-ATTACK-XSS/941120.yaml#L130)
-      is required for the test to pass; without it the match fails for
-      reasons neither this project nor the upstream override list this
-      was ported from could explain (possibly a go-ftw YAML-anchor/corpus
-      quirk unrelated to the proxy or WAF).
-    input:
-      uri: "/get?%20%20onthisisaverylongwordthathasmorethanfiftycharacters%20=vardata"
-
   # Everything else coraza-envoy-go-filter's own overrides.yml documents -
   # HTTP-protocol-level rejections (invalid methods/request
   # lines/HTTP-0.9/dual Content-Length+Transfer-Encoding), the CONNECT/
@@ -398,12 +381,13 @@ test_overrides:
     test_ids: [1]
     reason: |
       HTTP/1.0 request with no Host header at all (optional in HTTP/1.0).
-      A direct probe confirmed agentgateway requires a Host/authority
-      regardless of protocol version and answers "503 Service
-      Unavailable: processing failed: no authority or host" - the request
-      never reaches ext_proc/the WAF.
+      agentgateway requires a Host/authority regardless of protocol
+      version. Since agentgateway v1.7.0 its access log shows "400 invalid
+      request" for this request (earlier versions answered "503 Service
+      Unavailable: processing failed: no authority or host") - the request
+      never reaches ext_proc/the WAF either way.
     output:
-      status: 503
+      status: 400
       log:
         no_expect_ids: [920280]
   - rule_id: 920430

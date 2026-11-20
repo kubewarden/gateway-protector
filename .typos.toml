@@ -4,6 +4,8 @@ extend-exclude = [
   "docs/crds/CRD-docs-for-docs-repo.*",
   "hack/check-for-auto-generated-changes.sh",
   "internal/configstream/v1/*.pb.go",
+  # Verbatim copy of an upstream CRD, updated by the "Update agentgateway" workflow
+  "test/crds/agentgateway.dev_*.yaml",
   "go.mod",
   "go.sum",
 ]

@@ -69,12 +69,13 @@ import (
 const (
 	// agentgatewayImage is pinned to the same version test/e2e installs
 	// via the Helm chart, so both suites exercise the same data plane.
-	agentgatewayImage = "ghcr.io/agentgateway/agentgateway:v1.3.1"
+	agentgatewayImage = "ghcr.io/agentgateway/agentgateway:v1.7.0"
 
 	// httpbinImage provides the upstream the Coraza suite expects: it
 	// relies on go-httpbin's /status, /anything, /response-headers and
 	// /sse endpoints.
-	httpbinImage = "mccutchen/go-httpbin:2.22.1"
+	// renovate: datasource=docker
+	httpbinImage = "mccutchen/go-httpbin:2.26.0"
 
 	// gatewayPort is the HTTP port agentgateway binds inside its
 	// container (see agentgatewayConfigTemplate).

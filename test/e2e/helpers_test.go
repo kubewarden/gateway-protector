@@ -140,12 +140,12 @@ func curlPost(ctx context.Context, cfg *envconf.Config, ns, path, contentType, b
 
 	output := stdout.String()
 
-	idx := strings.LastIndex(output, "\n")
-	if idx == -1 {
+	respBody, statusLine, found := strings.CutLast(output, "\n")
+	if !found {
 		return "", "", fmt.Errorf("unexpected curl output (missing status line): %q", output)
 	}
 
-	return strings.TrimSpace(output[idx+1:]), output[:idx], nil
+	return strings.TrimSpace(statusLine), respBody, nil
 }
 
 // waitForStatus polls curlStatus until it returns want or timeout elapses.

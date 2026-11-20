@@ -10,6 +10,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/e2e-framework/klient/decoder"
@@ -35,14 +37,25 @@ var (
 	releaseName     = "gateway-protector"
 	chartPath       = "../../charts/gateway-protector"
 
-	// gatewayAPIVersion/agentgatewayVersion are pinned to match this
-	// repo's go.mod (sigs.k8s.io/gateway-api) and Tiltfile respectively, so
-	// the installed CRDs/control-plane match what the controller and this
-	// test suite were built and written against.
-	gatewayAPIVersion   = "v1.5.0"
-	agentgatewayVersion = "v1.3.1"
+	// agentgatewayVersion is pinned to match the Tiltfile, so the installed
+	// control plane matches what this test suite was written against. The
+	// Gateway API version comes from go.mod instead, see gatewayAPIVersion.
+	agentgatewayVersion = "v1.7.0"
 	agentgatewayNS      = "agentgateway-system"
 )
+
+// gatewayAPIVersion returns the version of sigs.k8s.io/gateway-api in
+// go.mod, so the installed CRDs match the Go types compiled into the
+// controller. The envtest suite does the same, see
+// internal/controller/suite_test.go.
+func gatewayAPIVersion(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Version}}", "sigs.k8s.io/gateway-api").Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to read the sigs.k8s.io/gateway-api version from go.mod: %w", err)
+	}
+
+	return strings.TrimSpace(string(out)), nil
+}
 
 func TestMain(m *testing.M) {
 	cfg, _ := envconf.NewFromFlags()
@@ -59,8 +72,12 @@ func TestMain(m *testing.M) {
 			// agentgateway and this project's WAFPolicy/WAFRuleSet CRDs
 			// build on. Server-side apply is required for the Gateway API's
 			// own CRDs (see the Tiltfile for the same requirement).
-			url := fmt.Sprintf("https://github.com/kubernetes-sigs/gateway-api/releases/download/%s/standard-install.yaml", gatewayAPIVersion)
-			if err := decoder.DecodeURL(ctx, url, decoder.CreateHandler(cfg.Client().Resources())); err != nil {
+			version, err := gatewayAPIVersion(ctx)
+			if err != nil {
+				return ctx, err
+			}
+			url := fmt.Sprintf("https://github.com/kubernetes-sigs/gateway-api/releases/download/%s/standard-install.yaml", version)
+			if err = decoder.DecodeURL(ctx, url, decoder.CreateHandler(cfg.Client().Resources())); err != nil {
 				return ctx, fmt.Errorf("failed to install Gateway API CRDs: %w", err)
 			}
 

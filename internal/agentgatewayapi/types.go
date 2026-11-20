@@ -5,9 +5,8 @@
 // docs/wafpolicy-lifecycle.md's "Gateway wiring").
 //
 // Vendored from github.com/agentgateway/agentgateway
-// (controller/api/v1alpha1/agentgateway) at commit
-// 8729cd04a85bd374701d00a7f2140e6408df7b1a (v1.3.1-45-g8729cd04) rather
-// than imported: the types live in agentgateway's main Go module, whose
+// (controller/api/v1alpha1/agentgateway) at release v1.7.0 rather than
+// imported: the types live in agentgateway's main Go module, whose
 // dependency graph (envoy go-control-plane, inference extensions, ...)
 // and replace directives are far too heavy a price for six small structs.
 // See docs/agentgateway-extproc.md for the research snapshot this copy is

@@ -54,7 +54,7 @@ spec:
     spec:
       serviceAccountName: httpbin
       containers:
-        - image: docker.io/mccutchen/go-httpbin:v2.15.0
+        - image: docker.io/mccutchen/go-httpbin:2.26.0
           imagePullPolicy: IfNotPresent
           name: httpbin
           command: [go-httpbin]
@@ -69,7 +69,7 @@ spec:
           # Kept around so a shell (Tilt or e2e) can exec in and curl the
           # gateway/httpbin from inside the cluster network, without
           # needing a port-forward.
-          image: curlimages/curl:8.11.0
+          image: curlimages/curl:8.23.0
           resources:
             requests:
               cpu: "100m"
