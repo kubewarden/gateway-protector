@@ -1,0 +1,18 @@
+suite: installation notes
+templates:
+  - NOTES.txt
+release:
+  name: gp
+  namespace: gp-system
+tests:
+  - it: should print a kubectl command with a valid label selector
+    asserts:
+      - matchRegexRaw:
+          pattern: 'kubectl -n gp-system get pods -l "app\.kubernetes\.io/instance=gp,app\.kubernetes\.io/name=gateway-protector,app\.kubernetes\.io/component=controller"'
+
+  - it: should use namespaceOverride in the kubectl command
+    set:
+      namespaceOverride: other
+    asserts:
+      - matchRegexRaw:
+          pattern: 'kubectl -n other get pods'

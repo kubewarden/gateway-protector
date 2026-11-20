@@ -4,4 +4,4 @@ WAF protection is applied by creating WAFPolicy objects that target a Gateway or
 
 To verify the controller is running:
 
-  kubectl -n {{ include "gateway-protector.namespace" . }} get pods -l "{{ include "gateway-protector.selectorLabels" . }},app.kubernetes.io/component=controller"
+  kubectl -n {{ include "gateway-protector.namespace" . }} get pods -l "{{ include "gateway-protector.labelSelectorToString" (include "gateway-protector.selectorLabels" .) }},app.kubernetes.io/component=controller"
