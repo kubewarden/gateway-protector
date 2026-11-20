@@ -134,7 +134,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check spelling with typos
-        uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85 # v1.52.0
+        uses: crate-ci/typos@276087d9a4f06398b3e04825487805e2d7375888 # v1.52.2
 
   helm-unittest:
     name: Helm unit tests
@@ -149,7 +149,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           # renovate: datasource=github-releases depName=helm/helm
           version: v4.3.2

@@ -1,13 +1,13 @@
 # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools
-CONTROLLER_TOOLS_VERSION := v0.21.0
+CONTROLLER_TOOLS_VERSION := v0.23.0
 ENVTEST_VERSION := release-0.24
 ENVTEST_K8S_VERSION := 1.33.0
 # renovate: datasource=github-releases depName=losisin/helm-values-schema-json
-HELM_VALUES_SCHEMA_JSON_VERSION := v2.3.1
+HELM_VALUES_SCHEMA_JSON_VERSION := v2.6.0
 # renovate: datasource=github-releases depName=golangci/golangci-lint
 GOLANGCI_LINT_VERSION ?= v2.12.1
 # renovate: datasource=github-releases depName=bufbuild/buf
-BUF_VERSION ?= v1.72.0
+BUF_VERSION ?= v1.75.0
 
 CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
