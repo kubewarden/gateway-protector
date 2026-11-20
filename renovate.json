@@ -9,7 +9,8 @@
       "managerFilePatterns": [
         "/(^|/)\\.github/.+\\.ya?ml$/",
         "/(^|/)Makefile$/",
-        "/(^|/)Dockerfile\\.[^/]+$/"
+        "/(^|/)Dockerfile\\.[^/]+$/",
+        "/^docs/crds/config\\.yml$/"
       ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s*\\n\\s*(?:ARG\\s+|ENV\\s+)?\\S+?\\s*(?:\\?=|:?=|:)\\s*\"?(?<currentValue>[^\"\\s]+)\"?"

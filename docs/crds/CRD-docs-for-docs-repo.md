@@ -94,7 +94,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | enabled toggles body inspection for this phase. |  | Required: \{\} <br /> |
-| `maxSize` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#quantity-resource-api)_ | maxSize caps the number of bytes buffered for inspection (e.g. "1Mi").<br />Bodies larger than this are handled per the engine's configured<br />behavior for oversized bodies. Only meaningful when enabled is true. |  | Optional: \{\} <br /> |
+| `maxSize` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#quantity-resource-api)_ | maxSize caps the number of bytes buffered for inspection (e.g. "1Mi").<br />Bodies larger than this are handled per the engine's configured<br />behavior for oversized bodies. Only meaningful when enabled is true. |  | Optional: \{\} <br /> |
 
 
 #### WAFCustomRule
@@ -193,7 +193,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
 | `kind` _string_ | `WAFPolicy` | | |
-| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
 | `spec` _[WAFPolicySpec](#wafpolicyspec)_ | spec defines the desired state of WAFPolicy |  | Required: \{\} <br /> |
 | `status` _[WAFPolicyStatus](#wafpolicystatus)_ | status defines the observed state of WAFPolicy |  | Optional: \{\} <br /> |
 
@@ -212,7 +212,7 @@ WAFPolicyList contains a list of WAFPolicy
 | --- | --- | --- | --- |
 | `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
 | `kind` _string_ | `WAFPolicyList` | | |
-| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `items` _[WAFPolicy](#wafpolicy) array_ |  |  |  |
 
 
@@ -262,7 +262,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#condition-v1-meta) array_ | conditions represent the current state of the WAFPolicy resource, using<br />the Gateway API status-conditions convention: Accepted (valid, target<br />resolves, not conflicted - see ConditionReasonConflicted) and<br />Programmed (gateway wired, engine live in the data plane). |  | Optional: \{\} <br /> |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#condition-v1-meta) array_ | conditions represent the current state of the WAFPolicy resource, using<br />the Gateway API status-conditions convention: Accepted (valid, target<br />resolves, not conflicted - see ConditionReasonConflicted) and<br />Programmed (gateway wired, engine live in the data plane). |  | Optional: \{\} <br /> |
 
 
 #### WAFRuleSet
@@ -282,7 +282,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
 | `kind` _string_ | `WAFRuleSet` | | |
-| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
 | `spec` _[WAFRuleSetSpec](#wafrulesetspec)_ | spec defines the desired state of WAFRuleSet |  | Required: \{\} <br /> |
 | `status` _[WAFRuleSetStatus](#wafrulesetstatus)_ | status defines the observed state of WAFRuleSet |  | Optional: \{\} <br /> |
 
@@ -301,7 +301,7 @@ WAFRuleSetList contains a list of WAFRuleSet
 | --- | --- | --- | --- |
 | `apiVersion` _string_ | `gateway-protector.kubewarden.io/v1alpha1` | | |
 | `kind` _string_ | `WAFRuleSetList` | | |
-| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `items` _[WAFRuleSet](#wafruleset) array_ |  |  |  |
 
 
@@ -334,6 +334,6 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#condition-v1-meta) array_ | conditions represent the current state of the WAFRuleSet resource. |  | Optional: \{\} <br /> |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#condition-v1-meta) array_ | conditions represent the current state of the WAFRuleSet resource. |  | Optional: \{\} <br /> |
 
 
