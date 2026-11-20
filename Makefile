@@ -5,7 +5,7 @@ ENVTEST_K8S_VERSION := 1.33.0
 # renovate: datasource=github-releases depName=losisin/helm-values-schema-json
 HELM_VALUES_SCHEMA_JSON_VERSION := v2.3.1
 # renovate: datasource=github-releases depName=golangci/golangci-lint
-GOLANGCI_LINT_VERSION ?= v2.12.1
+GOLANGCI_LINT_VERSION ?= v2.15.0
 # renovate: datasource=github-releases depName=bufbuild/buf
 BUF_VERSION ?= v1.72.0
 
