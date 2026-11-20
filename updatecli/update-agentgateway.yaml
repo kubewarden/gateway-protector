@@ -1,0 +1,6 @@
+policies:
+  - name: Update agentgateway
+    config:
+      - ./updatecli.d/update-agentgateway.yaml
+    values:
+      - ./values.yaml

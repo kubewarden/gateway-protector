@@ -1,0 +1,146 @@
+name: Update agentgateway
+# The pull request branch is updatecli_main_update_agentgateway
+pipelineid: update_agentgateway
+
+# This pipeline finds the latest agentgateway release. It updates the
+# agentgateway version that the e2e suites and the Tiltfile use, and the
+# copy of the AgentgatewayPolicy CRD that the envtest suite installs.
+#
+# The pipeline does not change internal/agentgatewayapi/types.go. That file
+# keeps only the fields that the controller sets, so a person must update it.
+# The CI of the pull request shows if the file still matches the new release.
+
+sources:
+  agentgateway:
+    name: Get the latest agentgateway release
+    kind: githubrelease
+    spec:
+      owner: agentgateway
+      repository: agentgateway
+      token: "{{ requiredEnv .github.token }}"
+      typefilter:
+        draft: false
+        prerelease: false
+      versionfilter:
+        kind: semver
+
+targets:
+  tiltfile:
+    name: Update the agentgateway version of the Tiltfile
+    kind: file
+    scmid: default
+    disablesourceinput: true
+    spec:
+      file: Tiltfile
+      matchpattern: 'agentgateway_version = "[^"]+"'
+      replacepattern: 'agentgateway_version = "{{ source "agentgateway" }}"'
+
+  e2eVersion:
+    name: Update the agentgateway version of the kind e2e suite
+    kind: file
+    scmid: default
+    disablesourceinput: true
+    spec:
+      file: test/e2e/main_test.go
+      matchpattern: '(agentgatewayVersion\s+=\s+)"[^"]+"'
+      replacepattern: '${1}"{{ source "agentgateway" }}"'
+
+  e2eImages:
+    name: Update the agentgateway image of the Coraza and CRS suites
+    kind: file
+    scmid: default
+    disablesourceinput: true
+    spec:
+      files:
+        - test/coraza-e2e/coraza_e2e_test.go
+        - test/ftw/ftw_test.go
+      matchpattern: '(agentgatewayImage\s+=\s+"ghcr\.io/agentgateway/agentgateway:)[^"]+"'
+      replacepattern: '${1}{{ source "agentgateway" }}"'
+
+  testCRD:
+    name: Update the AgentgatewayPolicy CRD of the envtest suite
+    kind: shell
+    scmid: default
+    disablesourceinput: true
+    spec:
+      shell: /bin/bash
+      # Exit 0 when nothing changed, 2 when the CRD changed, 1 on errors
+      changedif:
+        kind: exitcode
+        spec:
+          success: 0
+          warning: 2
+          failure: 1
+      command: |
+        set -euo pipefail
+        crd=test/crds/agentgateway.dev_agentgatewaypolicies.yaml
+        url="https://raw.githubusercontent.com/agentgateway/agentgateway/{{ source "agentgateway" }}/controller/install/helm/agentgateway-crds/templates/agentgateway.dev_agentgatewaypolicies.yaml"
+
+        new=$(mktemp)
+        trap 'rm -f "$new"' EXIT
+        curl -sSfL -o "$new" "$url" || exit 1
+
+        if cmp -s "$new" "$crd"; then
+          exit 0
+        fi
+        # DRY_RUN is "true" for `updatecli diff` and "false" for `updatecli apply`
+        if [ "$DRY_RUN" = "false" ]; then
+          cp "$new" "$crd"
+        fi
+        exit 2
+
+  testCRDReadme:
+    name: Update the agentgateway release in the README of the test CRDs
+    kind: file
+    scmid: default
+    disablesourceinput: true
+    spec:
+      file: test/crds/README.md
+      matchpattern: 'at (?:commit `[0-9a-f]{40}` \([^)]+\)|release `[^`]+`)'
+      replacepattern: 'at release `{{ source "agentgateway" }}`'
+
+scms:
+  default:
+    kind: github
+    spec:
+      user: "{{ .github.author }}"
+      email: "{{ .github.email }}"
+      owner: "{{ requiredEnv .github.owner }}"
+      repository: "{{ .github.repo }}"
+      branch: "{{ .github.branch }}"
+      token: "{{ requiredEnv .github.token }}"
+      commitusingapi: true
+      commitmessage:
+        squash: true
+        type: "build(deps)"
+        title: 'update agentgateway to {{ source "agentgateway" }}'
+        hidecredit: true
+        footers: "Signed-off-by: {{ .github.author }} <{{ .github.email }}>"
+
+actions:
+  openUpdatePR:
+    title: 'build(deps): update agentgateway to {{ source "agentgateway" }}'
+    kind: github/pullrequest
+    scmid: default
+    spec:
+      automerge: false
+      mergemethod: squash
+      description: |
+        Update agentgateway to `{{ source "agentgateway" }}`: the version that
+        the e2e suites and the Tiltfile use, and the copy of the
+        `AgentgatewayPolicy` CRD that the envtest suite installs.
+
+        This pull request does not change `internal/agentgatewayapi/types.go`.
+        If the envtest or the e2e jobs fail, compare that file with
+        `controller/api/v1alpha1/agentgateway` in the
+        [`{{ source "agentgateway" }}` release](https://github.com/agentgateway/agentgateway/tree/{{ source "agentgateway" }}/controller/api/v1alpha1/agentgateway),
+        and fix it in this pull request.
+      labels:
+        - "area/dependencies"
+      #     {{ if .pr.reviewers }}
+      reviewers:
+        #     {{ range .pr.reviewers }}
+        - "{{ . }}"
+        #     {{ end }}
+      #     {{ end }}
+      draft: false

@@ -1,0 +1,42 @@
+name: Update agentgateway
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 3 * * 1" # 3:30 on Monday
+
+permissions: {}
+
+jobs:
+  update-agentgateway:
+    name: Update agentgateway
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Updatecli in the runner
+        uses: updatecli/updatecli-action@93ae2608256484ef8598e902aa675bbc9e278e4e # v3.10.0
+
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: generate-token
+        with:
+          app-id: ${{ secrets.APP_ID }} # zizmor: ignore[secrets-outside-env]
+          private-key: ${{ secrets.APP_PRIVATE_KEY }} # zizmor: ignore[secrets-outside-env]
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          # minimum permissions for updatecli to push a branch and open a PR:
+          permission-contents: write
+          permission-pull-requests: write
+          permission-members: read # request reviews from the teams in .pr.reviewers
+
+      - name: Update agentgateway
+        env:
+          UPDATECLI_GITHUB_OWNER: ${{ github.repository_owner }}
+          UPDATECLI_GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |-
+          updatecli compose apply --file ./updatecli/update-agentgateway.yaml
