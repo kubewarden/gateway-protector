@@ -19,11 +19,12 @@ tests:
           path: spec.template.spec.containers[0].imagePullPolicy
           value: Always
 
+  # The release PR changes the default tag, so only the repository is fixed.
   - it: should use the default processor image
     asserts:
-      - equal:
+      - matchRegex:
           path: spec.template.spec.containers[0].image
-          value: ghcr.io/kubewarden/gateway-protector/processor:latest
+          pattern: ^ghcr\.io/kubewarden/gateway-protector/processor:[^:]+$
       - equal:
           path: spec.template.spec.containers[0].imagePullPolicy
           value: IfNotPresent
