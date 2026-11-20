@@ -139,27 +139,11 @@ generate-docs: ## Generate API documentation for CRDs.
 generate-fixtures: ## Generate test fixtures.
 	$(GO_BUILD_ENV) go run ./hack/generate_fixtures.go ./test/fixtures
 
-PROTO_SRCS := proto/configstream/v1/config_stream.proto
-
-# PROTO_GEN_MAIN is the only one of buf generate's two output files
-# (config_stream_grpc.pb.go is the other) declared as this rule's target.
-# A real multi-output rule (GNU Make 4.3's "&:" grouped targets) would be
-# more precise, but 4.3 postdates several still-common Make versions
-# (macOS ships 3.81; Ubuntu 20.04/RHEL 8 ship 4.2.1) and degrades silently
-# on older ones: "&:" parses there as an ordinary rule with a stray literal
-# "&" target, so the recipe can run twice (once per stale target) or, under
-# `make -j`, twice concurrently - two buf processes racing to write the same
-# files, with no error at all. Tracking one representative output instead
-# works on any Make: both files are only ever written together by the same
-# invocation, so the one blind spot (deleting only the non-tracked file by
-# hand) is both unlikely and already caught by CI's generate-proto drift
-# check.
-PROTO_GEN_MAIN := internal/configstream/v1/config_stream.pb.go
-
+# buf runs the protoc-gen-go and protoc-gen-go-grpc plugins with "go tool", so
+# their versions come from go.mod. The target always runs buf, so a plugin
+# update in go.mod always changes the generated code.
 .PHONY: generate-proto
-generate-proto: $(PROTO_GEN_MAIN) ## Generate Go code from the config stream's proto definitions.
-
-$(PROTO_GEN_MAIN): $(PROTO_SRCS) buf.gen.yaml proto/buf.yaml $(BUF)
+generate-proto: buf ## Generate Go code from the config stream's proto definitions.
 	$(GO_BUILD_ENV) $(BUF) generate proto
 
 .PHONY: proto-breaking
