@@ -106,6 +106,10 @@ processor-image:
 .PHONY: generate
 generate: generate-controller generate-chart generate-docs generate-proto
 
+.PHONY: check-generate
+check-generate: generate ## Regenerate all files and fail if that changes the working tree.
+	@./hack/check-for-auto-generated-changes.sh
+
 .PHONY: generate-controller
 generate-controller: manifests  ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(GO_BUILD_ENV) $(CONTROLLER_GEN) object paths="./api/v1alpha1" paths="./internal/agentgatewayapi"
