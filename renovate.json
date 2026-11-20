@@ -10,13 +10,30 @@
         "/(^|/)\\.github/.+\\.ya?ml$/",
         "/(^|/)Makefile$/",
         "/(^|/)Dockerfile\\.[^/]+$/",
-        "/^docs/crds/config\\.yml$/"
+        "/^docs/crds/config\\.yml$/",
+        "/^test/.+\\.go$/"
       ],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s*\\n\\s*(?:ARG\\s+|ENV\\s+)?\\S+?\\s*(?:\\?=|:?=|:)\\s*\"?(?<currentValue>[^\"\\s]+)\"?"
+        "(?:#|//) renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s*\\n\\s*(?:ARG\\s+|ENV\\s+)?\\S+?\\s*(?:\\?=|:?=|:)\\s*\"?(?<currentValue>[^\"\\s]+)\"?"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Update the container images of the Go test suites annotated with renovate directives",
+      "managerFilePatterns": [
+        "/^test/.+\\.go$/"
+      ],
+      "matchStrings": [
+        "// renovate: datasource=(?<datasource>docker)\\s*\\n\\s*\\S+\\s*=\\s*\"(?<depName>[^\"\\s:]+):(?<currentValue>[^\"\\s@]+)\""
       ]
     }
   ],
+  "kubernetes": {
+    "description": "Update the container images of the test manifests",
+    "managerFilePatterns": [
+      "/^test/manifests/.+\\.ya?ml$/"
+    ]
+  },
   "packageRules": [
     {
       "description": "The release PR of updatecli sets the image tags in the chart values. Renovate must not change them",
@@ -34,6 +51,13 @@
       "matchPackageNames": [
         "golangci/golangci-lint"
       ]
+    },
+    {
+      "description": "go-ftw v2.6.1 and later refuse to send the raw CR/LF characters of some CRS v4.25.0 regression tests, for example 921140-1. Remove this rule when the CRS version in go.mod has updated tests",
+      "matchPackageNames": [
+        "github.com/coreruleset/go-ftw/v2"
+      ],
+      "allowedVersions": "<2.6.1"
     }
   ]
 }

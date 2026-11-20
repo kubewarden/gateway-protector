@@ -76,8 +76,8 @@ const (
 	// (https://github.com/coreruleset/albedo): unlike a generic
 	// echo/httpbin server, it implements the specific response behaviors
 	// (status codes, header/body reflection) individual regression tests
-	// assert on. Pinned to the same version the reference connector's
-	// ftw setup uses.
+	// assert on.
+	// renovate: datasource=docker
 	albedoImage = "ghcr.io/coreruleset/albedo:0.3.0"
 
 	// albedoMaxBodySize is albedo's own request body size cap; several
@@ -100,8 +100,9 @@ const (
 	// goFtwModule/goFtwVersion pin the exact go-ftw release this harness
 	// invokes via `go run`, independent of this module's own go.mod (see
 	// runGoFTW).
-	goFtwModule  = "github.com/coreruleset/go-ftw/v2"
-	goFtwVersion = "v2.4.0"
+	goFtwModule = "github.com/coreruleset/go-ftw/v2"
+	// renovate: datasource=go depName=github.com/coreruleset/go-ftw/v2
+	goFtwVersion = "v2.6.0"
 
 	// crsCoreRuleSetModulePath is the Go module providing the embedded
 	// OWASP Core Rule Set - see embeddedCRSVersion, and

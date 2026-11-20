@@ -24,23 +24,6 @@ test_overrides:
       log:
         expect_ids: [200002, 200003]
 
-  # go-ftw/corpus YAML quirk unrelated to proxy or routing: reproduced
-  # verbatim from the same override list (its "hacks" section) since the
-  # corpus/go-ftw versions are pinned identically here (CRS v4.25.0,
-  # go-ftw v2.4.0).
-  - rule_id: 941120
-    test_ids: [8]
-    reason: |
-      Redeclaring the request URI here (identical to the corpus's own
-      value - see
-      https://github.com/coreruleset/coreruleset/blob/v4.25.0/tests/regression/tests/REQUEST-941-APPLICATION-ATTACK-XSS/941120.yaml#L130)
-      is required for the test to pass; without it the match fails for
-      reasons neither this project nor the upstream override list this
-      was ported from could explain (possibly a go-ftw YAML-anchor/corpus
-      quirk unrelated to the proxy or WAF).
-    input:
-      uri: "/get?%20%20onthisisaverylongwordthathasmorethanfiftycharacters%20=vardata"
-
   # Everything else coraza-envoy-go-filter's own overrides.yml documents -
   # HTTP-protocol-level rejections (invalid methods/request
   # lines/HTTP-0.9/dual Content-Length+Transfer-Encoding), the CONNECT/
