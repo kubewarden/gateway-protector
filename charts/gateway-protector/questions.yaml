@@ -1,0 +1,58 @@
+# This is a Rancher questions file
+---
+questions:
+  ###############################################################################
+  # General
+  ###############################################################################
+  - variable: global.imagePullPolicy
+    type: enum
+    options:
+      - Always
+      - IfNotPresent
+      - Never
+    default: IfNotPresent
+    label: Image Pull Policy
+    description: |
+      Pull policy of the images of all workloads
+    group: General
+
+  - variable: global.logLevel
+    type: enum
+    options:
+      - debug
+      - info
+      - warn
+      - error
+    default: info
+    label: Log Level
+    description: |
+      Log level of the controller and the processor
+    group: General
+
+  ###############################################################################
+  # Controller
+  ###############################################################################
+  - variable: controller.replicas
+    type: int
+    default: 1
+    min: 1
+    label: Controller Replicas
+    description: |
+      Number of replicas of the Controller Deployment
+    group: Controller
+
+  ###############################################################################
+  # Processor
+  ###############################################################################
+  - variable: processor.replicas
+    type: int
+    default: 1
+    min: 1
+    label: Processor Replicas
+    description: |
+      Number of replicas of the Processor Deployment. The processor runs the
+      WAF for all the traffic that the gateway sends to it.
+    group: Processor
+
+  # Telemetry questions come with the telemetry export, see
+  # https://github.com/kubewarden/gateway-protector/issues/23.
