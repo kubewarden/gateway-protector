@@ -70,7 +70,7 @@ import (
 const (
 	// agentgatewayImage is pinned to the same version test/e2e and
 	// test/coraza-e2e use, so every suite exercises the same data plane.
-	agentgatewayImage = "ghcr.io/agentgateway/agentgateway:v1.3.1"
+	agentgatewayImage = "ghcr.io/agentgateway/agentgateway:v1.7.0"
 
 	// albedoImage is the CRS project's own purpose-built test upstream
 	// (https://github.com/coreruleset/albedo): unlike a generic

@@ -40,7 +40,7 @@ var (
 	// the installed CRDs/control-plane match what the controller and this
 	// test suite were built and written against.
 	gatewayAPIVersion   = "v1.5.0"
-	agentgatewayVersion = "v1.3.1"
+	agentgatewayVersion = "v1.7.0"
 	agentgatewayNS      = "agentgateway-system"
 )
 

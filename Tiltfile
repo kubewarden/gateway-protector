@@ -19,15 +19,15 @@ local_resource(
 
 # Install agentgateway: the data plane this controller generates
 # AgentgatewayPolicy objects for (see
-# internal/controller/processor_config_wiring.go). Pinned to the same
-# commit docs/agentgateway-extproc.md's research and the vendored
-# internal/agentgatewayapi types are based on.
+# internal/controller/processor_config_wiring.go). Pinned to the release
+# that the vendored internal/agentgatewayapi types match. The "Update
+# agentgateway" workflow updates it.
 #
 # Installed via Helm from agentgateway's own OCI registry, following
 # https://agentgateway.dev/docs/kubernetes/latest/install/helm/ - first the
 # CRDs (AgentgatewayPolicy, AgentgatewayBackend, AgentgatewayParameters),
 # then the control plane itself.
-agentgateway_version = "v1.3.1"
+agentgateway_version = "v1.7.0"
 
 load("ext://helm_resource", "helm_resource")
 helm_resource(

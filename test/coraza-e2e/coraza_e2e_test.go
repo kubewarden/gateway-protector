@@ -69,7 +69,7 @@ import (
 const (
 	// agentgatewayImage is pinned to the same version test/e2e installs
 	// via the Helm chart, so both suites exercise the same data plane.
-	agentgatewayImage = "ghcr.io/agentgateway/agentgateway:v1.3.1"
+	agentgatewayImage = "ghcr.io/agentgateway/agentgateway:v1.7.0"
 
 	// httpbinImage provides the upstream the Coraza suite expects: it
 	// relies on go-httpbin's /status, /anything, /response-headers and
