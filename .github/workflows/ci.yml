@@ -129,3 +129,30 @@ jobs:
           persist-credentials: false
       - name: Check spelling with typos
         uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85 # v1.52.0
+
+  # Rollup job for branch protection: a single, stable name that depends on all the checks
+  ci-success:
+    name: CI Success
+    if: always()
+    needs:
+      - test
+      - golangci-lint
+      - check-generated-code
+      - e2e
+      - coraza-e2e
+      - ftw
+      - spelling
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Make sure that all jobs passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "One or more jobs did not pass: $RESULTS"
+              exit 1
+            fi
+          done
+          echo "All jobs passed"
