@@ -1,0 +1,46 @@
+suite: processor backend TLS policy
+templates:
+  - processor/backend-tls-policy.yaml
+release:
+  name: gateway-protector
+  namespace: gateway-protector-system
+tests:
+  - it: should attach the policy to the processor Service
+    asserts:
+      - isKind:
+          of: AgentgatewayPolicy
+      - equal:
+          path: apiVersion
+          value: agentgateway.dev/v1alpha1
+      - equal:
+          path: spec.targetRefs
+          value:
+            - kind: Service
+              group: ""
+              name: gateway-protector-processor
+
+  - it: should use mTLS with the agentgateway client certificate and the CA bundle
+    asserts:
+      - equal:
+          path: spec.backend.tls.mtlsCertificateRef
+          value:
+            - name: gateway-protector-agentgateway-client-cert
+      - equal:
+          path: spec.backend.tls.caCertificateRefs
+          value:
+            - name: gateway-protector-ca-bundle
+
+  - it: should set the SNI to the DNS name of the processor Service
+    release:
+      namespace: custom-namespace
+    asserts:
+      - equal:
+          path: spec.backend.tls.sni
+          value: gateway-protector-processor.custom-namespace.svc
+
+  # The controller only watches and deletes the AgentgatewayPolicy objects
+  # with this label, and it must not touch this one.
+  - it: should not have the label of the policies that the controller manages
+    asserts:
+      - notExists:
+          path: metadata.labels["gateway-protector.kubewarden.io/managed"]

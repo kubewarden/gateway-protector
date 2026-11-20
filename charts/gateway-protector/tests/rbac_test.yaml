@@ -1,0 +1,192 @@
+suite: controller RBAC
+templates:
+  - controller/serviceaccount.yaml
+  - controller/role.yaml
+  - controller/rolebinding.yaml
+  - controller/certs_role.yaml
+  - controller/certs_rolebinding.yaml
+  - controller/leader_election_role.yaml
+  - controller/leader_election_rolebinding.yaml
+  - controller/metrics_auth_role.yaml
+  - controller/metrics_auth_rolebinding.yaml
+  - controller/metrics_reader_role.yaml
+release:
+  name: gateway-protector
+  namespace: gateway-protector-system
+tests:
+  - it: should create the controller ServiceAccount in the release namespace
+    template: controller/serviceaccount.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: gateway-protector-controller
+      - equal:
+          path: metadata.namespace
+          value: gateway-protector-system
+
+  - it: should bind each role to the controller ServiceAccount
+    templates:
+      - controller/rolebinding.yaml
+      - controller/certs_rolebinding.yaml
+      - controller/leader_election_rolebinding.yaml
+      - controller/metrics_auth_rolebinding.yaml
+    asserts:
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: gateway-protector-controller
+              namespace: gateway-protector-system
+
+  - it: should bind the ClusterRole of the controller
+    template: controller/rolebinding.yaml
+    asserts:
+      - isKind:
+          of: ClusterRoleBinding
+      - equal:
+          path: roleRef
+          value:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: gateway-protector-controller
+
+  - it: should bind the certificate Role in the release namespace only
+    template: controller/certs_rolebinding.yaml
+    asserts:
+      - isKind:
+          of: RoleBinding
+      - equal:
+          path: metadata.namespace
+          value: gateway-protector-system
+      - equal:
+          path: roleRef
+          value:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: gateway-protector-controller-certs
+
+  - it: should bind the leader election Role in the release namespace only
+    template: controller/leader_election_rolebinding.yaml
+    asserts:
+      - isKind:
+          of: RoleBinding
+      - equal:
+          path: metadata.namespace
+          value: gateway-protector-system
+      - equal:
+          path: roleRef
+          value:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: gateway-protector-controller-leader-election
+
+  - it: should bind the metrics auth ClusterRole
+    template: controller/metrics_auth_rolebinding.yaml
+    asserts:
+      - equal:
+          path: roleRef
+          value:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: gateway-protector-controller-metrics-auth
+
+  # The controller reads the certificate Secrets through the namespaced
+  # Role. A cluster-wide grant would expose the Secrets of all namespaces.
+  - it: should not grant access to Secrets or ConfigMaps at the cluster scope
+    template: controller/role.yaml
+    asserts:
+      - isKind:
+          of: ClusterRole
+      - notContains:
+          path: rules
+          content:
+            resources:
+              - secrets
+          any: true
+      - notContains:
+          path: rules
+          content:
+            resources:
+              - configmaps
+          any: true
+
+  - it: should give the controller write access to the AgentgatewayPolicy objects
+    template: controller/role.yaml
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - agentgateway.dev
+            resources:
+              - agentgatewaypolicies
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch
+              - update
+              - watch
+
+  - it: should give the controller read access to the Gateways and HTTPRoutes
+    template: controller/role.yaml
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - gateway.networking.k8s.io
+            resources:
+              - gateways
+              - httproutes
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should let the controller rotate the certificates without creating or deleting them
+    template: controller/certs_role.yaml
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.namespace
+          value: gateway-protector-system
+      - equal:
+          path: rules
+          value:
+            - apiGroups:
+                - ""
+              resources:
+                - secrets
+                - configmaps
+              verbs:
+                - get
+                - list
+                - watch
+                - update
+                - patch
+
+  - it: should let anyone with the metrics reader ClusterRole read the metrics
+    template: controller/metrics_reader_role.yaml
+    asserts:
+      - equal:
+          path: rules
+          value:
+            - nonResourceURLs:
+                - /metrics
+              verbs:
+                - get
+
+  - it: should label every RBAC object as a part of the controller
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: controller
+      - equal:
+          path: metadata.labels["app.kubernetes.io/part-of"]
+          value: gateway-protector
+      - equal:
+          path: metadata.labels["app.kubernetes.io/managed-by"]
+          value: Helm

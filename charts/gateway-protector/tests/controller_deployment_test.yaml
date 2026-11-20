@@ -1,0 +1,140 @@
+suite: controller Deployment
+templates:
+  - controller/deployment.yaml
+release:
+  name: gateway-protector
+  namespace: gateway-protector-system
+tests:
+  - it: should run the controller image from the values
+    set:
+      controller.image:
+        repository: registry.example.com/custom/controller
+        tag: v9.9.9
+        pullPolicy: Always
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example.com/custom/controller:v9.9.9
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: Always
+
+  - it: should use the default controller image
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/kubewarden/gateway-protector/controller:latest
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+
+  - it: should set the number of replicas
+    set:
+      controller.replicas: 3
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3
+
+  - it: should set the resources from the values
+    set:
+      controller.resources:
+        limits:
+          cpu: "1"
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 256Mi
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: 200m
+              memory: 256Mi
+
+  - it: should not set resources when the values are empty
+    set:
+      controller.resources: null
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].resources
+
+  - it: should turn on leader election and serve the config stream on port 9002
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --leader-elect
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --config-stream-bind-address=:9002
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: config-stream
+            containerPort: 9002
+
+  - it: should pass the namespace of the pod to the controller
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+
+  - it: should mount the config stream certificate read-only
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --config-stream-cert-dir=/config-stream-certs
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            mountPath: /config-stream-certs
+            name: config-stream-certs
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: config-stream-certs
+            secret:
+              secretName: gateway-protector-controller-cert
+
+  - it: should give the container a writable /tmp
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            mountPath: /tmp
+            name: tmp
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
+
+  - it: should run with the controller ServiceAccount
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: gateway-protector-controller
+
+  - it: should select only the controller pods
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: gateway-protector
+            app.kubernetes.io/instance: gateway-protector
+            app.kubernetes.io/component: controller
+      - isSubset:
+          path: spec.template.metadata.labels
+          content:
+            app.kubernetes.io/name: gateway-protector
+            app.kubernetes.io/instance: gateway-protector
+            app.kubernetes.io/component: controller

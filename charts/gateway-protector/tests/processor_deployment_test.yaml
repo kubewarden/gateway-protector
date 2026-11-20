@@ -1,0 +1,173 @@
+suite: processor Deployment
+templates:
+  - processor/deployment.yaml
+release:
+  name: gateway-protector
+  namespace: gateway-protector-system
+tests:
+  - it: should run the processor image from the values
+    set:
+      processor.image:
+        repository: registry.example.com/custom/processor
+        tag: v9.9.9
+        pullPolicy: Always
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example.com/custom/processor:v9.9.9
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: Always
+
+  - it: should use the default processor image
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/kubewarden/gateway-protector/processor:latest
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+
+  - it: should set the number of replicas
+    set:
+      processor.replicas: 3
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3
+
+  - it: should set the resources from the values
+    set:
+      processor.resources:
+        limits:
+          cpu: "2"
+          memory: 2Gi
+        requests:
+          cpu: 500m
+          memory: 512Mi
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+
+  - it: should not set resources when the values are empty
+    set:
+      processor.resources: null
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].resources
+
+  - it: should pass the log level to the processor
+    set:
+      processor.logLevel: debug
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --log-level=debug
+
+  - it: should not pass a log level when the value is empty
+    set:
+      processor.logLevel: ""
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --grpc-bind-address=:9000
+            - --health-bind-address=:9001
+            - --config-server-address=gateway-protector-controller-config-stream.gateway-protector-system.svc:9002
+            - --subscriber-id=$(POD_NAME)
+            - --config-stream-cert-dir=/config-stream-certs
+            - --ext-proc-cert-dir=/ext-proc-certs
+
+  - it: should connect to the config stream Service of the release namespace
+    release:
+      namespace: custom-namespace
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --config-server-address=gateway-protector-controller-config-stream.custom-namespace.svc:9002
+
+  - it: should identify each subscriber by the name of its pod
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --subscriber-id=$(POD_NAME)
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+
+  - it: should serve ext_proc on port 9000 and the health check on port 9001
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --grpc-bind-address=:9000
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --health-bind-address=:9001
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.grpc.port
+          value: 9001
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.grpc.port
+          value: 9001
+
+  - it: should mount the config stream client certificate read-only
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --config-stream-cert-dir=/config-stream-certs
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            mountPath: /config-stream-certs
+            name: config-stream-certs
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: config-stream-certs
+            secret:
+              secretName: gateway-protector-processor-client-cert
+
+  - it: should mount the ext_proc server certificate read-only
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --ext-proc-cert-dir=/ext-proc-certs
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            mountPath: /ext-proc-certs
+            name: ext-proc-certs
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: ext-proc-certs
+            secret:
+              secretName: gateway-protector-processor-server-cert
+
+  - it: should select only the processor pods
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: gateway-protector
+            app.kubernetes.io/instance: gateway-protector
+            app.kubernetes.io/component: processor
+      - isSubset:
+          path: spec.template.metadata.labels
+          content:
+            app.kubernetes.io/name: gateway-protector
+            app.kubernetes.io/instance: gateway-protector
+            app.kubernetes.io/component: processor

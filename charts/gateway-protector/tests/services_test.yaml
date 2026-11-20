@@ -1,0 +1,83 @@
+suite: Services
+templates:
+  - controller/service.yaml
+  - processor/service.yaml
+release:
+  name: gateway-protector
+  namespace: gateway-protector-system
+tests:
+  - it: should expose the controller metrics on port 8443
+    template: controller/service.yaml
+    documentSelector:
+      path: metadata.name
+      value: gateway-protector-controller-metrics
+    asserts:
+      - equal:
+          path: spec.ports
+          value:
+            - name: https
+              port: 8443
+              targetPort: 8443
+      - equal:
+          path: spec.selector
+          value:
+            app.kubernetes.io/name: gateway-protector
+            app.kubernetes.io/instance: gateway-protector
+            app.kubernetes.io/component: controller
+
+  # The processor dials this Service by name, see processor/deployment.yaml.
+  - it: should expose the controller config stream on port 9002
+    template: controller/service.yaml
+    documentSelector:
+      path: metadata.name
+      value: gateway-protector-controller-config-stream
+    asserts:
+      - equal:
+          path: spec.ports
+          value:
+            - name: grpc
+              port: 9002
+              targetPort: 9002
+      - equal:
+          path: spec.selector
+          value:
+            app.kubernetes.io/name: gateway-protector
+            app.kubernetes.io/instance: gateway-protector
+            app.kubernetes.io/component: controller
+
+  # The AgentgatewayPolicy objects of the controller point to this Service
+  # by name, see ProcessorServiceName in internal/controller.
+  - it: should expose the processor ext_proc server on port 9000
+    template: processor/service.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: gateway-protector-processor
+      - equal:
+          path: spec.ports
+          value:
+            - name: grpc
+              port: 9000
+              targetPort: 9000
+      - equal:
+          path: spec.selector
+          value:
+            app.kubernetes.io/name: gateway-protector
+            app.kubernetes.io/instance: gateway-protector
+            app.kubernetes.io/component: processor
+
+  - it: should keep the fixed Service names when the release name changes
+    release:
+      name: custom-release
+    set:
+      fullnameOverride: custom-fullname
+    asserts:
+      - template: controller/service.yaml
+        documentIndex: 1
+        equal:
+          path: metadata.name
+          value: gateway-protector-controller-config-stream
+      - template: processor/service.yaml
+        equal:
+          path: metadata.name
+          value: gateway-protector-processor

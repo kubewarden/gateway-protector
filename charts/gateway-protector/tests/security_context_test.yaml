@@ -1,0 +1,19 @@
+suite: container security contexts
+templates:
+  - controller/deployment.yaml
+  - processor/deployment.yaml
+tests:
+  - it: should harden the security context of each container
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL

@@ -1,0 +1,35 @@
+suite: CustomResourceDefinitions
+templates:
+  - crd/gateway-protector.kubewarden.io_wafpolicies.yaml
+  - crd/gateway-protector.kubewarden.io_wafrulesets.yaml
+tests:
+  - it: should install the WAFPolicy CRD
+    template: crd/gateway-protector.kubewarden.io_wafpolicies.yaml
+    asserts:
+      - isKind:
+          of: CustomResourceDefinition
+      - equal:
+          path: metadata.name
+          value: wafpolicies.gateway-protector.kubewarden.io
+      - equal:
+          path: spec.names.kind
+          value: WAFPolicy
+
+  - it: should install the WAFRuleSet CRD
+    template: crd/gateway-protector.kubewarden.io_wafrulesets.yaml
+    asserts:
+      - isKind:
+          of: CustomResourceDefinition
+      - equal:
+          path: metadata.name
+          value: wafrulesets.gateway-protector.kubewarden.io
+      - equal:
+          path: spec.names.kind
+          value: WAFRuleSet
+
+  # Deleting a CRD deletes all its objects, so an uninstall must not remove them.
+  - it: should keep the CRDs when the release is uninstalled
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep

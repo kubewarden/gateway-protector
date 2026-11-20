@@ -1,0 +1,275 @@
+suite: certificates
+templates:
+  - certs.yaml
+release:
+  name: gateway-protector
+  namespace: gateway-protector-system
+tests:
+  # The names must match the constants in internal/certs/constants.go.
+  - it: should create the CA, the leaf certificates, and the CA bundle
+    asserts:
+      - hasDocuments:
+          count: 6
+      - documentIndex: 0
+        equal:
+          path: metadata.name
+          value: gateway-protector-ca
+      - documentIndex: 1
+        equal:
+          path: metadata.name
+          value: gateway-protector-controller-cert
+      - documentIndex: 2
+        equal:
+          path: metadata.name
+          value: gateway-protector-processor-client-cert
+      - documentIndex: 3
+        equal:
+          path: metadata.name
+          value: gateway-protector-processor-server-cert
+      - documentIndex: 4
+        equal:
+          path: metadata.name
+          value: gateway-protector-agentgateway-client-cert
+      - documentIndex: 5
+        isKind:
+          of: ConfigMap
+      - documentIndex: 5
+        equal:
+          path: metadata.name
+          value: gateway-protector-ca-bundle
+
+  - it: should create all the objects in the release namespace
+    release:
+      namespace: custom-namespace
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: custom-namespace
+
+  # agentgateway requires the kubernetes.io/tls type for its client certificate.
+  - it: should give each Secret the kubernetes.io/tls type
+    documentSelector:
+      path: kind
+      value: Secret
+      matchMany: true
+    asserts:
+      - equal:
+          path: type
+          value: kubernetes.io/tls
+      - isNotNullOrEmpty:
+          path: data["tls.crt"]
+      - isNotNullOrEmpty:
+          path: data["tls.key"]
+
+  - it: should add the CA bundle to each leaf Secret that verifies a peer
+    asserts:
+      - documentIndex: 1
+        isNotNullOrEmpty:
+          path: data["ca.crt"]
+      - documentIndex: 2
+        isNotNullOrEmpty:
+          path: data["ca.crt"]
+      - documentIndex: 3
+        isNotNullOrEmpty:
+          path: data["ca.crt"]
+      - documentIndex: 4
+        notExists:
+          path: data["ca.crt"]
+
+  - it: should put the CA bundle in the ConfigMap in PEM format
+    documentIndex: 5
+    asserts:
+      - matchRegex:
+          path: data["ca.crt"]
+          pattern: ^-----BEGIN CERTIFICATE-----
+      - notExists:
+          path: data["tls.key"]
+
+  - it: should not have an old CA certificate on a new installation
+    documentIndex: 0
+    asserts:
+      - notExists:
+          path: data["old-ca.crt"]
+
+  - it: should label the certificates of each component
+    asserts:
+      - documentIndex: 0
+        equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: controller
+      - documentIndex: 1
+        equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: controller
+      - documentIndex: 2
+        equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: processor
+      - documentIndex: 3
+        equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: processor
+      - documentIndex: 4
+        equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: processor
+
+  # On an upgrade, the chart must keep the certificates that the controller
+  # rotates. New certificates would break the mTLS connections until each
+  # pod restarts.
+  - it: should keep the existing CA on an upgrade
+    kubernetesProvider:
+      scheme:
+        "v1/Secret":
+          gvr:
+            version: v1
+            resource: secrets
+          namespaced: true
+      objects:
+        - apiVersion: v1
+          kind: Secret
+          metadata:
+            name: gateway-protector-ca
+            namespace: gateway-protector-system
+          data:
+            tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJmakNDQVNTZ0F3SUJBZ0lVTDA4SGozcmRyQ3dHVDJvdElKL1Nic3hpcGFJd0NnWUlLb1pJemowRUF3SXcKSkRFaU1DQUdBMVVFQXd3WloyRjBaWGRoZVMxd2NtOTBaV04wYjNJdGRHVnpkQzFqWVRBZ0Z3MHlOakV4TWpBeApOakkzTkRSYUdBOHlNVEkyTVRBeU56RTJNamMwTkZvd0pERWlNQ0FHQTFVRUF3d1paMkYwWlhkaGVTMXdjbTkwClpXTjBiM0l0ZEdWemRDMWpZVEJaTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEEwSUFCRXhBNGVjeDh1aGgKSFpYMjZ2bDdNTkQ5ejYvYnJwRWY3UDlTYUg3dVpjMERVb05LdWg2dTJiSDNCMGN4REFJUkR2NVNETUZiY1hQKwpCTWlQOE5zbCtZbWpNakF3TUIwR0ExVWREZ1FXQkJTazdYWWNDTkRaajdUVjA2R3JraWVybzIzbjlqQVBCZ05WCkhSTUJBZjhFQlRBREFRSC9NQW9HQ0NxR1NNNDlCQU1DQTBnQU1FVUNJRG43NDU3VjY5OThvTVRrczlTSGJ4dGQKQWlhYVhKdm56dlFxZTcrOUdkZzVBaUVBdXloZ0liZFJvVXFzTjZUcG5BbENKek8wOENnclg0WmF3QW1uYTdmRgo2VE09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+            tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR0hBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJHMHdhd0lCQVFRZ05tRlV1bnlsc01Zcm5CWXIKdGhyblltUndEcHJHWXdhQUJHZlZHZGlEU0p5aFJBTkNBQVJNUU9Ibk1mTG9ZUjJWOXVyNWV6RFEvYyt2MjY2UgpIK3ovVW1oKzdtWE5BMUtEU3JvZXJ0bXg5d2RITVF3Q0VRNytVZ3pCVzNGei9nVElqL0RiSmZtSgotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: data["tls.crt"]
+          value: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJmakNDQVNTZ0F3SUJBZ0lVTDA4SGozcmRyQ3dHVDJvdElKL1Nic3hpcGFJd0NnWUlLb1pJemowRUF3SXcKSkRFaU1DQUdBMVVFQXd3WloyRjBaWGRoZVMxd2NtOTBaV04wYjNJdGRHVnpkQzFqWVRBZ0Z3MHlOakV4TWpBeApOakkzTkRSYUdBOHlNVEkyTVRBeU56RTJNamMwTkZvd0pERWlNQ0FHQTFVRUF3d1paMkYwWlhkaGVTMXdjbTkwClpXTjBiM0l0ZEdWemRDMWpZVEJaTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEEwSUFCRXhBNGVjeDh1aGgKSFpYMjZ2bDdNTkQ5ejYvYnJwRWY3UDlTYUg3dVpjMERVb05LdWg2dTJiSDNCMGN4REFJUkR2NVNETUZiY1hQKwpCTWlQOE5zbCtZbWpNakF3TUIwR0ExVWREZ1FXQkJTazdYWWNDTkRaajdUVjA2R3JraWVybzIzbjlqQVBCZ05WCkhSTUJBZjhFQlRBREFRSC9NQW9HQ0NxR1NNNDlCQU1DQTBnQU1FVUNJRG43NDU3VjY5OThvTVRrczlTSGJ4dGQKQWlhYVhKdm56dlFxZTcrOUdkZzVBaUVBdXloZ0liZFJvVXFzTjZUcG5BbENKek8wOENnclg0WmF3QW1uYTdmRgo2VE09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+      - equal:
+          path: data["tls.key"]
+          value: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR0hBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJHMHdhd0lCQVFRZ05tRlV1bnlsc01Zcm5CWXIKdGhyblltUndEcHJHWXdhQUJHZlZHZGlEU0p5aFJBTkNBQVJNUU9Ibk1mTG9ZUjJWOXVyNWV6RFEvYyt2MjY2UgpIK3ovVW1oKzdtWE5BMUtEU3JvZXJ0bXg5d2RITVF3Q0VRNytVZ3pCVzNGei9nVElqL0RiSmZtSgotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==
+      - notExists:
+          path: data["old-ca.crt"]
+
+  - it: should trust the current and the old CA during a CA rotation
+    kubernetesProvider:
+      scheme:
+        "v1/Secret":
+          gvr:
+            version: v1
+            resource: secrets
+          namespaced: true
+      objects:
+        - apiVersion: v1
+          kind: Secret
+          metadata:
+            name: gateway-protector-ca
+            namespace: gateway-protector-system
+          data:
+            tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJmakNDQVNTZ0F3SUJBZ0lVTDA4SGozcmRyQ3dHVDJvdElKL1Nic3hpcGFJd0NnWUlLb1pJemowRUF3SXcKSkRFaU1DQUdBMVVFQXd3WloyRjBaWGRoZVMxd2NtOTBaV04wYjNJdGRHVnpkQzFqWVRBZ0Z3MHlOakV4TWpBeApOakkzTkRSYUdBOHlNVEkyTVRBeU56RTJNamMwTkZvd0pERWlNQ0FHQTFVRUF3d1paMkYwWlhkaGVTMXdjbTkwClpXTjBiM0l0ZEdWemRDMWpZVEJaTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEEwSUFCRXhBNGVjeDh1aGgKSFpYMjZ2bDdNTkQ5ejYvYnJwRWY3UDlTYUg3dVpjMERVb05LdWg2dTJiSDNCMGN4REFJUkR2NVNETUZiY1hQKwpCTWlQOE5zbCtZbWpNakF3TUIwR0ExVWREZ1FXQkJTazdYWWNDTkRaajdUVjA2R3JraWVybzIzbjlqQVBCZ05WCkhSTUJBZjhFQlRBREFRSC9NQW9HQ0NxR1NNNDlCQU1DQTBnQU1FVUNJRG43NDU3VjY5OThvTVRrczlTSGJ4dGQKQWlhYVhKdm56dlFxZTcrOUdkZzVBaUVBdXloZ0liZFJvVXFzTjZUcG5BbENKek8wOENnclg0WmF3QW1uYTdmRgo2VE09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+            tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR0hBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJHMHdhd0lCQVFRZ05tRlV1bnlsc01Zcm5CWXIKdGhyblltUndEcHJHWXdhQUJHZlZHZGlEU0p5aFJBTkNBQVJNUU9Ibk1mTG9ZUjJWOXVyNWV6RFEvYyt2MjY2UgpIK3ovVW1oKzdtWE5BMUtEU3JvZXJ0bXg5d2RITVF3Q0VRNytVZ3pCVzNGei9nVElqL0RiSmZtSgotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==
+            old-ca.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJoakNDQVN5Z0F3SUJBZ0lVR2FuSzVMazcyU3l3UUQzWUNodERXUUV0YWZNd0NnWUlLb1pJemowRUF3SXcKS0RFbU1DUUdBMVVFQXd3ZFoyRjBaWGRoZVMxd2NtOTBaV04wYjNJdGIyeGtMWFJsYzNRdFkyRXdJQmNOTWpZeApNVEl3TVRZeU56UTBXaGdQTWpFeU5qRXdNamN4TmpJM05EUmFNQ2d4SmpBa0JnTlZCQU1NSFdkaGRHVjNZWGt0CmNISnZkR1ZqZEc5eUxXOXNaQzEwWlhOMExXTmhNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUUKZm5XTFhsbVVaVnE2ZUkvYXB2a3RZMnBmblBxeXh6T3MrOWFrcmtiOWpyRllpZ0Vna1RVN3orSEpEUGI1dStTYworUU9yVHJ4VFE2TDNzNXJnNlI4eVFLTXlNREF3SFFZRFZSME9CQllFRkVtZ3R4cTlnY08rclFvSHAvcndNT3dEClVQa2VNQThHQTFVZEV3RUIvd1FGTUFNQkFmOHdDZ1lJS29aSXpqMEVBd0lEU0FBd1JRSWdSWjg0dUQrWnE4eFYKNWJXcTYxSlM5SnV5TVZSODJqNzVid2N4ZEc0OThpWUNJUURvOU1nQ1B5Q2tUcS9hcEZ3d1V1Vnd6cUkwajlQawppTW9STDViT3N6VWJnZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    asserts:
+      - documentIndex: 0
+        equal:
+          path: data["old-ca.crt"]
+          value: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJoakNDQVN5Z0F3SUJBZ0lVR2FuSzVMazcyU3l3UUQzWUNodERXUUV0YWZNd0NnWUlLb1pJemowRUF3SXcKS0RFbU1DUUdBMVVFQXd3ZFoyRjBaWGRoZVMxd2NtOTBaV04wYjNJdGIyeGtMWFJsYzNRdFkyRXdJQmNOTWpZeApNVEl3TVRZeU56UTBXaGdQTWpFeU5qRXdNamN4TmpJM05EUmFNQ2d4SmpBa0JnTlZCQU1NSFdkaGRHVjNZWGt0CmNISnZkR1ZqZEc5eUxXOXNaQzEwWlhOMExXTmhNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUUKZm5XTFhsbVVaVnE2ZUkvYXB2a3RZMnBmblBxeXh6T3MrOWFrcmtiOWpyRllpZ0Vna1RVN3orSEpEUGI1dStTYworUU9yVHJ4VFE2TDNzNXJnNlI4eVFLTXlNREF3SFFZRFZSME9CQllFRkVtZ3R4cTlnY08rclFvSHAvcndNT3dEClVQa2VNQThHQTFVZEV3RUIvd1FGTUFNQkFmOHdDZ1lJS29aSXpqMEVBd0lEU0FBd1JRSWdSWjg0dUQrWnE4eFYKNWJXcTYxSlM5SnV5TVZSODJqNzVid2N4ZEc0OThpWUNJUURvOU1nQ1B5Q2tUcS9hcEZ3d1V1Vnd6cUkwajlQawppTW9STDViT3N6VWJnZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+      - documentIndex: 1
+        equal:
+          path: data["ca.crt"]
+          value: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJmakNDQVNTZ0F3SUJBZ0lVTDA4SGozcmRyQ3dHVDJvdElKL1Nic3hpcGFJd0NnWUlLb1pJemowRUF3SXcKSkRFaU1DQUdBMVVFQXd3WloyRjBaWGRoZVMxd2NtOTBaV04wYjNJdGRHVnpkQzFqWVRBZ0Z3MHlOakV4TWpBeApOakkzTkRSYUdBOHlNVEkyTVRBeU56RTJNamMwTkZvd0pERWlNQ0FHQTFVRUF3d1paMkYwWlhkaGVTMXdjbTkwClpXTjBiM0l0ZEdWemRDMWpZVEJaTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEEwSUFCRXhBNGVjeDh1aGgKSFpYMjZ2bDdNTkQ5ejYvYnJwRWY3UDlTYUg3dVpjMERVb05LdWg2dTJiSDNCMGN4REFJUkR2NVNETUZiY1hQKwpCTWlQOE5zbCtZbWpNakF3TUIwR0ExVWREZ1FXQkJTazdYWWNDTkRaajdUVjA2R3JraWVybzIzbjlqQVBCZ05WCkhSTUJBZjhFQlRBREFRSC9NQW9HQ0NxR1NNNDlCQU1DQTBnQU1FVUNJRG43NDU3VjY5OThvTVRrczlTSGJ4dGQKQWlhYVhKdm56dlFxZTcrOUdkZzVBaUVBdXloZ0liZFJvVXFzTjZUcG5BbENKek8wOENnclg0WmF3QW1uYTdmRgo2VE09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0KLS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJoakNDQVN5Z0F3SUJBZ0lVR2FuSzVMazcyU3l3UUQzWUNodERXUUV0YWZNd0NnWUlLb1pJemowRUF3SXcKS0RFbU1DUUdBMVVFQXd3ZFoyRjBaWGRoZVMxd2NtOTBaV04wYjNJdGIyeGtMWFJsYzNRdFkyRXdJQmNOTWpZeApNVEl3TVRZeU56UTBXaGdQTWpFeU5qRXdNamN4TmpJM05EUmFNQ2d4SmpBa0JnTlZCQU1NSFdkaGRHVjNZWGt0CmNISnZkR1ZqZEc5eUxXOXNaQzEwWlhOMExXTmhNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUUKZm5XTFhsbVVaVnE2ZUkvYXB2a3RZMnBmblBxeXh6T3MrOWFrcmtiOWpyRllpZ0Vna1RVN3orSEpEUGI1dStTYworUU9yVHJ4VFE2TDNzNXJnNlI4eVFLTXlNREF3SFFZRFZSME9CQllFRkVtZ3R4cTlnY08rclFvSHAvcndNT3dEClVQa2VNQThHQTFVZEV3RUIvd1FGTUFNQkFmOHdDZ1lJS29aSXpqMEVBd0lEU0FBd1JRSWdSWjg0dUQrWnE4eFYKNWJXcTYxSlM5SnV5TVZSODJqNzVid2N4ZEc0OThpWUNJUURvOU1nQ1B5Q2tUcS9hcEZ3d1V1Vnd6cUkwajlQawppTW9STDViT3N6VWJnZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+      - documentIndex: 2
+        equal:
+          path: data["ca.crt"]
+          value: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJmakNDQVNTZ0F3SUJBZ0lVTDA4SGozcmRyQ3dHVDJvdElKL1Nic3hpcGFJd0NnWUlLb1pJemowRUF3SXcKSkRFaU1DQUdBMVVFQXd3WloyRjBaWGRoZVMxd2NtOTBaV04wYjNJdGRHVnpkQzFqWVRBZ0Z3MHlOakV4TWpBeApOakkzTkRSYUdBOHlNVEkyTVRBeU56RTJNamMwTkZvd0pERWlNQ0FHQTFVRUF3d1paMkYwWlhkaGVTMXdjbTkwClpXTjBiM0l0ZEdWemRDMWpZVEJaTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEEwSUFCRXhBNGVjeDh1aGgKSFpYMjZ2bDdNTkQ5ejYvYnJwRWY3UDlTYUg3dVpjMERVb05LdWg2dTJiSDNCMGN4REFJUkR2NVNETUZiY1hQKwpCTWlQOE5zbCtZbWpNakF3TUIwR0ExVWREZ1FXQkJTazdYWWNDTkRaajdUVjA2R3JraWVybzIzbjlqQVBCZ05WCkhSTUJBZjhFQlRBREFRSC9NQW9HQ0NxR1NNNDlCQU1DQTBnQU1FVUNJRG43NDU3VjY5OThvTVRrczlTSGJ4dGQKQWlhYVhKdm56dlFxZTcrOUdkZzVBaUVBdXloZ0liZFJvVXFzTjZUcG5BbENKek8wOENnclg0WmF3QW1uYTdmRgo2VE09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0KLS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJoakNDQVN5Z0F3SUJBZ0lVR2FuSzVMazcyU3l3UUQzWUNodERXUUV0YWZNd0NnWUlLb1pJemowRUF3SXcKS0RFbU1DUUdBMVVFQXd3ZFoyRjBaWGRoZVMxd2NtOTBaV04wYjNJdGIyeGtMWFJsYzNRdFkyRXdJQmNOTWpZeApNVEl3TVRZeU56UTBXaGdQTWpFeU5qRXdNamN4TmpJM05EUmFNQ2d4SmpBa0JnTlZCQU1NSFdkaGRHVjNZWGt0CmNISnZkR1ZqZEc5eUxXOXNaQzEwWlhOMExXTmhNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUUKZm5XTFhsbVVaVnE2ZUkvYXB2a3RZMnBmblBxeXh6T3MrOWFrcmtiOWpyRllpZ0Vna1RVN3orSEpEUGI1dStTYworUU9yVHJ4VFE2TDNzNXJnNlI4eVFLTXlNREF3SFFZRFZSME9CQllFRkVtZ3R4cTlnY08rclFvSHAvcndNT3dEClVQa2VNQThHQTFVZEV3RUIvd1FGTUFNQkFmOHdDZ1lJS29aSXpqMEVBd0lEU0FBd1JRSWdSWjg0dUQrWnE4eFYKNWJXcTYxSlM5SnV5TVZSODJqNzVid2N4ZEc0OThpWUNJUURvOU1nQ1B5Q2tUcS9hcEZ3d1V1Vnd6cUkwajlQawppTW9STDViT3N6VWJnZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+      - documentIndex: 3
+        equal:
+          path: data["ca.crt"]
+          value: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJmakNDQVNTZ0F3SUJBZ0lVTDA4SGozcmRyQ3dHVDJvdElKL1Nic3hpcGFJd0NnWUlLb1pJemowRUF3SXcKSkRFaU1DQUdBMVVFQXd3WloyRjBaWGRoZVMxd2NtOTBaV04wYjNJdGRHVnpkQzFqWVRBZ0Z3MHlOakV4TWpBeApOakkzTkRSYUdBOHlNVEkyTVRBeU56RTJNamMwTkZvd0pERWlNQ0FHQTFVRUF3d1paMkYwWlhkaGVTMXdjbTkwClpXTjBiM0l0ZEdWemRDMWpZVEJaTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEEwSUFCRXhBNGVjeDh1aGgKSFpYMjZ2bDdNTkQ5ejYvYnJwRWY3UDlTYUg3dVpjMERVb05LdWg2dTJiSDNCMGN4REFJUkR2NVNETUZiY1hQKwpCTWlQOE5zbCtZbWpNakF3TUIwR0ExVWREZ1FXQkJTazdYWWNDTkRaajdUVjA2R3JraWVybzIzbjlqQVBCZ05WCkhSTUJBZjhFQlRBREFRSC9NQW9HQ0NxR1NNNDlCQU1DQTBnQU1FVUNJRG43NDU3VjY5OThvTVRrczlTSGJ4dGQKQWlhYVhKdm56dlFxZTcrOUdkZzVBaUVBdXloZ0liZFJvVXFzTjZUcG5BbENKek8wOENnclg0WmF3QW1uYTdmRgo2VE09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0KLS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJoakNDQVN5Z0F3SUJBZ0lVR2FuSzVMazcyU3l3UUQzWUNodERXUUV0YWZNd0NnWUlLb1pJemowRUF3SXcKS0RFbU1DUUdBMVVFQXd3ZFoyRjBaWGRoZVMxd2NtOTBaV04wYjNJdGIyeGtMWFJsYzNRdFkyRXdJQmNOTWpZeApNVEl3TVRZeU56UTBXaGdQTWpFeU5qRXdNamN4TmpJM05EUmFNQ2d4SmpBa0JnTlZCQU1NSFdkaGRHVjNZWGt0CmNISnZkR1ZqZEc5eUxXOXNaQzEwWlhOMExXTmhNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUUKZm5XTFhsbVVaVnE2ZUkvYXB2a3RZMnBmblBxeXh6T3MrOWFrcmtiOWpyRllpZ0Vna1RVN3orSEpEUGI1dStTYworUU9yVHJ4VFE2TDNzNXJnNlI4eVFLTXlNREF3SFFZRFZSME9CQllFRkVtZ3R4cTlnY08rclFvSHAvcndNT3dEClVQa2VNQThHQTFVZEV3RUIvd1FGTUFNQkFmOHdDZ1lJS29aSXpqMEVBd0lEU0FBd1JRSWdSWjg0dUQrWnE4eFYKNWJXcTYxSlM5SnV5TVZSODJqNzVid2N4ZEc0OThpWUNJUURvOU1nQ1B5Q2tUcS9hcEZ3d1V1Vnd6cUkwajlQawppTW9STDViT3N6VWJnZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+      - documentIndex: 5
+        equal:
+          path: data["ca.crt"]
+          value: |
+            -----BEGIN CERTIFICATE-----
+            MIIBfjCCASSgAwIBAgIUL08Hj3rdrCwGT2otIJ/SbsxipaIwCgYIKoZIzj0EAwIw
+            JDEiMCAGA1UEAwwZZ2F0ZXdheS1wcm90ZWN0b3ItdGVzdC1jYTAgFw0yNjExMjAx
+            NjI3NDRaGA8yMTI2MTAyNzE2Mjc0NFowJDEiMCAGA1UEAwwZZ2F0ZXdheS1wcm90
+            ZWN0b3ItdGVzdC1jYTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABExA4ecx8uhh
+            HZX26vl7MND9z6/brpEf7P9SaH7uZc0DUoNKuh6u2bH3B0cxDAIRDv5SDMFbcXP+
+            BMiP8Nsl+YmjMjAwMB0GA1UdDgQWBBSk7XYcCNDZj7TV06Grkiero23n9jAPBgNV
+            HRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIDn7457V6998oMTks9SHbxtd
+            AiaaXJvnzvQqe7+9Gdg5AiEAuyhgIbdRoUqsN6TpnAlCJzO08CgrX4ZawAmna7fF
+            6TM=
+            -----END CERTIFICATE-----
+            -----BEGIN CERTIFICATE-----
+            MIIBhjCCASygAwIBAgIUGanK5Lk72SywQD3YChtDWQEtafMwCgYIKoZIzj0EAwIw
+            KDEmMCQGA1UEAwwdZ2F0ZXdheS1wcm90ZWN0b3Itb2xkLXRlc3QtY2EwIBcNMjYx
+            MTIwMTYyNzQ0WhgPMjEyNjEwMjcxNjI3NDRaMCgxJjAkBgNVBAMMHWdhdGV3YXkt
+            cHJvdGVjdG9yLW9sZC10ZXN0LWNhMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE
+            fnWLXlmUZVq6eI/apvktY2pfnPqyxzOs+9akrkb9jrFYigEgkTU7z+HJDPb5u+Sc
+            +QOrTrxTQ6L3s5rg6R8yQKMyMDAwHQYDVR0OBBYEFEmgtxq9gcO+rQoHp/rwMOwD
+            UPkeMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgRZ84uD+Zq8xV
+            5bWq61JS9JuyMVR82j75bwcxdG498iYCIQDo9MgCPyCkTq/apFwwUuVwzqI0j9Pk
+            iMoRL5bOszUbgg==
+            -----END CERTIFICATE-----
+
+  - it: should keep the existing leaf certificates on an upgrade
+    kubernetesProvider:
+      scheme:
+        "v1/Secret":
+          gvr:
+            version: v1
+            resource: secrets
+          namespaced: true
+      objects:
+        - apiVersion: v1
+          kind: Secret
+          metadata:
+            name: gateway-protector-controller-cert
+            namespace: gateway-protector-system
+          data:
+            tls.crt: Y29udHJvbGxlci1jZXJ0
+            tls.key: Y29udHJvbGxlci1rZXk=
+        - apiVersion: v1
+          kind: Secret
+          metadata:
+            name: gateway-protector-processor-client-cert
+            namespace: gateway-protector-system
+          data:
+            tls.crt: cHJvY2Vzc29yLWNsaWVudC1jZXJ0
+            tls.key: cHJvY2Vzc29yLWNsaWVudC1rZXk=
+        - apiVersion: v1
+          kind: Secret
+          metadata:
+            name: gateway-protector-processor-server-cert
+            namespace: gateway-protector-system
+          data:
+            tls.crt: cHJvY2Vzc29yLXNlcnZlci1jZXJ0
+            tls.key: cHJvY2Vzc29yLXNlcnZlci1rZXk=
+        - apiVersion: v1
+          kind: Secret
+          metadata:
+            name: gateway-protector-agentgateway-client-cert
+            namespace: gateway-protector-system
+          data:
+            tls.crt: YWdlbnRnYXRld2F5LWNsaWVudC1jZXJ0
+            tls.key: YWdlbnRnYXRld2F5LWNsaWVudC1rZXk=
+    asserts:
+      - documentIndex: 1
+        isSubset:
+          path: data
+          content:
+            tls.crt: Y29udHJvbGxlci1jZXJ0
+            tls.key: Y29udHJvbGxlci1rZXk=
+      - documentIndex: 2
+        isSubset:
+          path: data
+          content:
+            tls.crt: cHJvY2Vzc29yLWNsaWVudC1jZXJ0
+            tls.key: cHJvY2Vzc29yLWNsaWVudC1rZXk=
+      - documentIndex: 3
+        isSubset:
+          path: data
+          content:
+            tls.crt: cHJvY2Vzc29yLXNlcnZlci1jZXJ0
+            tls.key: cHJvY2Vzc29yLXNlcnZlci1rZXk=
+      - documentIndex: 4
+        isSubset:
+          path: data
+          content:
+            tls.crt: YWdlbnRnYXRld2F5LWNsaWVudC1jZXJ0
+            tls.key: YWdlbnRnYXRld2F5LWNsaWVudC1rZXk=
