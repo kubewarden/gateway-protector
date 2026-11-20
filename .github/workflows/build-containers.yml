@@ -1,0 +1,34 @@
+name: Build and sign container images (main and feat branches)
+
+# Builds and signs the images of the `main` branch under the `latest` tag,
+# and the images of a `feat-*` branch under the `latest-feat-*` tag. Tagged
+# releases go through release.yml, which calls the same reusable workflow
+# with a `version`.
+
+# No default token permissions. Each job declares exactly what it needs.
+permissions: {}
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "main"
+      - "feat-**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      contents: read # Checkout private forks
+      packages: write # Pushing images to ghcr.io
+      id-token: write # Signing images with cosign and actions/attest
+      attestations: write # actions/attest (SLSA L3 provenance)
+    uses: kubewarden/github-actions/.github/workflows/container-release.yml@d12b2b18e1f9dbfe15c79c9ecb7149cf956704a7 # v8.1.0
+    with:
+      components: '["controller","processor"]'
+      image-namespace: ${{ github.event.repository.name }}
+      # main -> latest; feat-foo -> latest-feat-foo
+      tag: ${{ github.ref_name == 'main' && 'latest' || format('latest-{0}', github.ref_name) }}
