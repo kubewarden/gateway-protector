@@ -143,3 +143,35 @@ jobs:
               prerelease: isPreRelease,
               make_latest: isPreRelease ? 'false' : 'true',
             });
+
+  sync-helm-charts:
+    name: Trigger Helm Charts Sync Workflow
+    needs: release
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: generate-token
+        with:
+          app-id: ${{ secrets.APP_ID }} # zizmor: ignore[secrets-outside-env]
+          private-key: ${{ secrets.APP_PRIVATE_KEY }} # zizmor: ignore[secrets-outside-env]
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            helm-charts
+          # minimum permissions to trigger a repository_dispatch on helm-charts:
+          permission-contents: write
+      - name: Trigger chart update
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          GIT_REF_NAME: ${{ github.ref_name }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          jq -n \
+            --arg source_repo "$SOURCE_REPO" \
+            --arg tag "$GIT_REF_NAME" \
+            '{"event_type":"release-gateway-protector","client_payload":{"source_repo":$source_repo,"tag":$tag}}' \
+            > payload.json
+          gh api "repos/$REPO_OWNER/helm-charts/dispatches" \
+            -X POST \
+            --input payload.json
