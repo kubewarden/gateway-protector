@@ -1,6 +1,11 @@
 name: CI
 
 on:
+  workflow_call:
+    secrets:
+      CODECOV_TOKEN:
+        description: "Token to upload the coverage report to Codecov"
+        required: false
   push:
   pull_request:
 
