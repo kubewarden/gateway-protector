@@ -20,12 +20,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc/credentials"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -72,6 +74,23 @@ func podNamespace() (string, error) {
 	return ns, nil
 }
 
+// parseLogLevel maps the values of --log-level to zap levels. The values are
+// the same as the ones of the --log-level flag of the processor.
+func parseLogLevel(level string) (zapcore.Level, error) {
+	switch level {
+	case "debug":
+		return zapcore.DebugLevel, nil
+	case "info":
+		return zapcore.InfoLevel, nil
+	case "warn":
+		return zapcore.WarnLevel, nil
+	case "error":
+		return zapcore.ErrorLevel, nil
+	default:
+		return zapcore.InfoLevel, fmt.Errorf("invalid log level %q: use debug, info, warn, or error", level)
+	}
+}
+
 func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
@@ -81,6 +100,7 @@ func main() {
 	var configStreamCertDir string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var logLevel string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -102,11 +122,29 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics server")
+	flag.StringVar(&logLevel, "log-level", "info",
+		"Log level: debug, info, warn, or error. --zap-log-level wins when it is set.")
 	opts := zap.Options{
 		Development: true,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	level, err := parseLogLevel(logLevel)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	zapLevelSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "zap-log-level" {
+			zapLevelSet = true
+		}
+	})
+	if !zapLevelSet {
+		opts.Level = level
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
