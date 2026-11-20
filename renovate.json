@@ -1,0 +1,28 @@
+{
+  "extends": [
+    "github>kubewarden/github-actions//renovate-config/default"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update pinned tool versions annotated with renovate directives",
+      "managerFilePatterns": [
+        "/(^|/)\\.github/.+\\.ya?ml$/",
+        "/(^|/)Makefile$/",
+        "/(^|/)Dockerfile\\.[^/]+$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s*\\n\\s*(?:ARG\\s+|ENV\\s+)?\\S+?\\s*(?:\\?=|:?=|:)\\s*\"?(?<currentValue>[^\"\\s]+)\"?"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Update the Makefile pin and the CI action of golangci-lint together",
+      "groupName": "golangci-lint",
+      "matchPackageNames": [
+        "golangci/golangci-lint"
+      ]
+    }
+  ]
+}
