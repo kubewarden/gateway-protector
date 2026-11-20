@@ -24,6 +24,14 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make test
+      - name: Upload Go test coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          name: go-tests
+          files: coverage/cover.out
+          flags: go-tests
+          verbose: true
+          token: ${{ secrets.CODECOV_TOKEN }} # zizmor: ignore[secrets-outside-env]
 
   golangci-lint:
     name: Lint
