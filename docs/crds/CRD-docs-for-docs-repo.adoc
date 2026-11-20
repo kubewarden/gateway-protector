@@ -73,21 +73,21 @@ directly.
 [cols="20a,50a,15a,15a", options="header"]
 |===
 | Field | Description | Default | Validation
-| *`group`* __xref:{anchor_prefix}-sigs-k8s-io-gateway-api-apis-v1-group[$$Group$$]__ | group is the group of the target resource. + |  | Required: \{} +
+| *`group`* __link:https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#group[$$Group$$]__ | group is the group of the target resource. + |  | Required: \{} +
 
-| *`kind`* __xref:{anchor_prefix}-sigs-k8s-io-gateway-api-apis-v1-kind[$$Kind$$]__ | kind is the kind of the target resource. Only "Gateway" and "HTTPRoute" +
+| *`kind`* __link:https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#kind[$$Kind$$]__ | kind is the kind of the target resource. Only "Gateway" and "HTTPRoute" +
 (group gateway.networking.k8s.io) are supported. + |  | Enum: [Gateway HTTPRoute] +
 Required: \{} +
 
-| *`name`* __xref:{anchor_prefix}-sigs-k8s-io-gateway-api-apis-v1-objectname[$$ObjectName$$]__ | name is the name of the target resource. + |  | Required: \{} +
+| *`name`* __link:https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#objectname[$$ObjectName$$]__ | name is the name of the target resource. + |  | Required: \{} +
 
-| *`namespace`* __xref:{anchor_prefix}-sigs-k8s-io-gateway-api-apis-v1-namespace[$$Namespace$$]__ | namespace is the namespace of the target resource. WAFPolicy/DLPPolicy +
+| *`namespace`* __link:https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#namespace[$$Namespace$$]__ | namespace is the namespace of the target resource. WAFPolicy/DLPPolicy +
 objects live in the platform-owned namespace (e.g. +
 gateway-protector-system) while the targeted Gateway/HTTPRoute usually +
 lives elsewhere, so this field is required to let the controller +
 resolve cross-namespace targets unambiguously. + |  | Required: \{} +
 
-| *`sectionName`* __xref:{anchor_prefix}-sigs-k8s-io-gateway-api-apis-v1-sectionname[$$SectionName$$]__ | sectionName targets a specific listener (when kind is Gateway) or a +
+| *`sectionName`* __link:https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#sectionname[$$SectionName$$]__ | sectionName targets a specific listener (when kind is Gateway) or a +
 specific route rule (when kind is HTTPRoute). When unset, the policy +
 applies to the whole Gateway/HTTPRoute. + |  | Optional: \{} +
 

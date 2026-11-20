@@ -55,11 +55,11 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `group` _[Group](#group)_ | group is the group of the target resource. |  | Required: \{\} <br /> |
-| `kind` _[Kind](#kind)_ | kind is the kind of the target resource. Only "Gateway" and "HTTPRoute"<br />(group gateway.networking.k8s.io) are supported. |  | Enum: [Gateway HTTPRoute] <br />Required: \{\} <br /> |
-| `name` _[ObjectName](#objectname)_ | name is the name of the target resource. |  | Required: \{\} <br /> |
-| `namespace` _[Namespace](#namespace)_ | namespace is the namespace of the target resource. WAFPolicy/DLPPolicy<br />objects live in the platform-owned namespace (e.g.<br />gateway-protector-system) while the targeted Gateway/HTTPRoute usually<br />lives elsewhere, so this field is required to let the controller<br />resolve cross-namespace targets unambiguously. |  | Required: \{\} <br /> |
-| `sectionName` _[SectionName](#sectionname)_ | sectionName targets a specific listener (when kind is Gateway) or a<br />specific route rule (when kind is HTTPRoute). When unset, the policy<br />applies to the whole Gateway/HTTPRoute. |  | Optional: \{\} <br /> |
+| `group` _[Group](https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#group)_ | group is the group of the target resource. |  | Required: \{\} <br /> |
+| `kind` _[Kind](https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#kind)_ | kind is the kind of the target resource. Only "Gateway" and "HTTPRoute"<br />(group gateway.networking.k8s.io) are supported. |  | Enum: [Gateway HTTPRoute] <br />Required: \{\} <br /> |
+| `name` _[ObjectName](https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#objectname)_ | name is the name of the target resource. |  | Required: \{\} <br /> |
+| `namespace` _[Namespace](https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#namespace)_ | namespace is the namespace of the target resource. WAFPolicy/DLPPolicy<br />objects live in the platform-owned namespace (e.g.<br />gateway-protector-system) while the targeted Gateway/HTTPRoute usually<br />lives elsewhere, so this field is required to let the controller<br />resolve cross-namespace targets unambiguously. |  | Required: \{\} <br /> |
+| `sectionName` _[SectionName](https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#sectionname)_ | sectionName targets a specific listener (when kind is Gateway) or a<br />specific route rule (when kind is HTTPRoute). When unset, the policy<br />applies to the whole Gateway/HTTPRoute. |  | Optional: \{\} <br /> |
 
 
 #### WAFAnomalyThreshold
