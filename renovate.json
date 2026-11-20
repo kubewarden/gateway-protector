@@ -36,6 +36,18 @@
   },
   "packageRules": [
     {
+      "description": "Update the Kubernetes modules together. The excluded modules do not follow the Kubernetes release cycle",
+      "groupName": "kubernetes",
+      "matchPackageNames": [
+        "k8s.io/**",
+        "!k8s.io/klog/v2",
+        "!k8s.io/kube-openapi",
+        "!k8s.io/utils",
+        "!k8s.io/gengo/v2",
+        "sigs.k8s.io/controller-runtime"
+      ]
+    },
+    {
       "description": "The release PR of updatecli sets the image tags in the chart values. Renovate must not change them",
       "matchManagers": [
         "helm-values"
