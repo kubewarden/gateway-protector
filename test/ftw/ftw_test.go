@@ -31,7 +31,7 @@
 // This harness deliberately does not force a Host header onto test
 // requests: go-ftw's generated config only overrides dest_addr/port (see
 // ftwInputOverride), and both agentgateway's route and the processor's
-// engine-selection table are catch-alls matching any Host. Several CRS
+// engine-selection table are catch-all entries that match any Host. Several CRS
 // tests use a specific Host header - or its absence - as part of the
 // attack they exercise, so every test's Host header arrives exactly as
 // the CRS authors wrote it, and no overrides are needed for those tests.

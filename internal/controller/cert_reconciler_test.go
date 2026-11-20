@@ -78,28 +78,28 @@ type leafCerts struct {
 // the given validity bounds and initial CA bundle.
 func createLeafSecrets(namespace string, caCert, caPrivateKey []byte, notBefore, notAfter time.Time, caBundle []byte) leafCerts {
 	ctx := context.Background()
-	var leafs leafCerts
+	var leaves leafCerts
 
 	controllerDNSName := certs.ControllerServerDNSName + "." + namespace + ".svc"
 	var err error
-	leafs.controllerCert, leafs.controllerKey, err = certs.GenerateCert(caCert, caPrivateKey, notBefore, notAfter, controllerDNSName)
+	leaves.controllerCert, leaves.controllerKey, err = certs.GenerateCert(caCert, caPrivateKey, notBefore, notAfter, controllerDNSName)
 	Expect(err).NotTo(HaveOccurred())
-	createLeafSecret(ctx, namespace, certs.ControllerCertSecretName, leafs.controllerCert, leafs.controllerKey, caBundle)
+	createLeafSecret(ctx, namespace, certs.ControllerCertSecretName, leaves.controllerCert, leaves.controllerKey, caBundle)
 
-	leafs.processorClientCert, leafs.processorClientKey, err = certs.GenerateCert(caCert, caPrivateKey, notBefore, notAfter, certs.ProcessorClientCommonName)
+	leaves.processorClientCert, leaves.processorClientKey, err = certs.GenerateCert(caCert, caPrivateKey, notBefore, notAfter, certs.ProcessorClientCommonName)
 	Expect(err).NotTo(HaveOccurred())
-	createLeafSecret(ctx, namespace, certs.ProcessorClientCertSecretName, leafs.processorClientCert, leafs.processorClientKey, caBundle)
+	createLeafSecret(ctx, namespace, certs.ProcessorClientCertSecretName, leaves.processorClientCert, leaves.processorClientKey, caBundle)
 
 	processorServerDNSName := certs.DNSName(certs.ProcessorServerServiceName, namespace)
-	leafs.processorServerCert, leafs.processorServerKey, err = certs.GenerateCert(caCert, caPrivateKey, notBefore, notAfter, processorServerDNSName)
+	leaves.processorServerCert, leaves.processorServerKey, err = certs.GenerateCert(caCert, caPrivateKey, notBefore, notAfter, processorServerDNSName)
 	Expect(err).NotTo(HaveOccurred())
-	createLeafSecret(ctx, namespace, certs.ProcessorServerCertSecretName, leafs.processorServerCert, leafs.processorServerKey, caBundle)
+	createLeafSecret(ctx, namespace, certs.ProcessorServerCertSecretName, leaves.processorServerCert, leaves.processorServerKey, caBundle)
 
-	leafs.agentgatewayClientCert, leafs.agentgatewayClientKey, err = certs.GenerateCert(caCert, caPrivateKey, notBefore, notAfter, certs.AgentgatewayClientCommonName)
+	leaves.agentgatewayClientCert, leaves.agentgatewayClientKey, err = certs.GenerateCert(caCert, caPrivateKey, notBefore, notAfter, certs.AgentgatewayClientCommonName)
 	Expect(err).NotTo(HaveOccurred())
-	createLeafSecret(ctx, namespace, certs.AgentgatewayClientCertSecretName, leafs.agentgatewayClientCert, leafs.agentgatewayClientKey, caBundle)
+	createLeafSecret(ctx, namespace, certs.AgentgatewayClientCertSecretName, leaves.agentgatewayClientCert, leaves.agentgatewayClientKey, caBundle)
 
-	return leafs
+	return leaves
 }
 
 var _ = Describe("Cert reconciler", func() {
@@ -201,8 +201,8 @@ var _ = Describe("Cert reconciler", func() {
 			createCASecret(ctx, namespace, caCert, caPrivateKey, nil)
 			createCABundleConfigMap(ctx, namespace, caCert)
 
-			leafs := createLeafSecrets(namespace, caCert, caPrivateKey, time.Now(), time.Now().Add(certs.LeafExpiration), caCert)
-			controllerCert, controllerKey = leafs.controllerCert, leafs.controllerKey
+			leaves := createLeafSecrets(namespace, caCert, caPrivateKey, time.Now(), time.Now().Add(certs.LeafExpiration), caCert)
+			controllerCert, controllerKey = leaves.controllerCert, leaves.controllerKey
 
 			reconciler := CertReconciler{Client: k8sClient, Namespace: namespace}
 			Expect(reconciler.reconcile(ctx)).To(Succeed())

@@ -90,7 +90,7 @@ There is no webhook by design, not by omission:
   schema/CEL validation, which the API server enforces with zero extra
   infrastructure - no TLS certificates (and thus no cert-manager
   dependency), no availability coupling between the controller and every
-  `WAFPolicy` write, and no way to be bypassed or mis-ordered.
+  `WAFPolicy` write, and no way to be bypassed or run in the wrong order.
 - The checks a webhook *could* add beyond that are all better served
   elsewhere (see
   [Why validation is split between admission and the reconciler](#why-validation-is-split-between-admission-and-the-reconciler)
