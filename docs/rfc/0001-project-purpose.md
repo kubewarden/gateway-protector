@@ -1150,6 +1150,15 @@ We dropped this design for three reasons:
   can write an ext_proc policy for the `Gateway` with
   `strategy.inheritance: Override`. agentgateway then ignores the ext_proc
   policy of each route.
+- Can the generated `AgentgatewayPolicy` give the engine key to the processor?
+  agentgateway has a `metadataContext` field for ext_proc. This field holds
+  values that agentgateway sends to the external service with each request.
+  With the engine key in this field, the processor needs no table of hosts and
+  paths. This design can remove three limits of the current design: the
+  missing support for `RegularExpression` paths, the single policy for a route
+  with more than one `Gateway`, and the traffic that goes through the
+  processor without inspection. agentgateway v1.3.1 does not have this field
+  in its Kubernetes API.
 - Does a later version support CRS plugins? The rule order of the controller
   has no step for the files of a plugin.
 - How much latency does the processor add? How much latency does a sidecar
