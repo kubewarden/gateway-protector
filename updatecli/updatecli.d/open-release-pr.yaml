@@ -1,0 +1,104 @@
+name: Prepare the gateway-protector release
+# The pull request branch is updatecli_main_release_pr
+pipelineid: release_pr
+
+# This pipeline reads the release version, for example v0.2.0 or
+# v0.2.0-rc.1, from the RELEASE_VERSION environment variable. It writes the
+# version into the Helm chart and opens a pull request. After the merge,
+# push the tag of the version to start the release workflow.
+#
+# The chart version is the release version without the "v" prefix. The
+# release workflow fails if the tag and the chart do not agree.
+
+sources:
+  releaseVersion:
+    name: Get the release version
+    kind: shell
+    spec:
+      shell: /bin/bash
+      environments:
+        - name: RELEASE_VERSION
+      command: |
+        if [[ ! "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+          echo "RELEASE_VERSION must look like v1.2.3 or v1.2.3-rc.1, not '$RELEASE_VERSION'" >&2
+          exit 1
+        fi
+        echo "$RELEASE_VERSION"
+
+targets:
+  chartVersion:
+    name: Update the version of the Helm chart
+    kind: yaml
+    scmid: default
+    sourceid: releaseVersion
+    transformers:
+      - trimprefix: "v"
+    spec:
+      file: charts/gateway-protector/Chart.yaml
+      key: $.version
+  chartAppVersion:
+    name: Update the appVersion of the Helm chart
+    kind: yaml
+    scmid: default
+    sourceid: releaseVersion
+    spec:
+      file: charts/gateway-protector/Chart.yaml
+      key: $.appVersion
+  controllerImageTag:
+    name: Update the tag of the controller image
+    kind: yaml
+    scmid: default
+    sourceid: releaseVersion
+    spec:
+      file: charts/gateway-protector/values.yaml
+      key: $.controller.image.tag
+  processorImageTag:
+    name: Update the tag of the processor image
+    kind: yaml
+    scmid: default
+    sourceid: releaseVersion
+    spec:
+      file: charts/gateway-protector/values.yaml
+      key: $.processor.image.tag
+
+scms:
+  default:
+    kind: github
+    spec:
+      user: "{{ .github.author }}"
+      email: "{{ .github.email }}"
+      owner: "{{ requiredEnv .github.owner }}"
+      repository: "{{ .github.repo }}"
+      branch: "{{ .github.branch }}"
+      token: "{{ requiredEnv .github.token }}"
+      commitusingapi: true
+      commitmessage:
+        squash: true
+        type: "build"
+        title: 'prepare the {{ requiredEnv "RELEASE_VERSION" }} release'
+        hidecredit: true
+        footers: "Signed-off-by: {{ .github.author }} <{{ .github.email }}>"
+
+actions:
+  openReleasePR:
+    title: 'build: prepare the {{ requiredEnv "RELEASE_VERSION" }} release'
+    kind: github/pullrequest
+    scmid: default
+    spec:
+      automerge: false
+      mergemethod: squash
+      description: |
+        Set the version of the Helm chart and the tags of its images to
+        `{{ requiredEnv "RELEASE_VERSION" }}`.
+
+        After the merge, push the `{{ requiredEnv "RELEASE_VERSION" }}` tag on
+        the merge commit to start the release workflow.
+      labels:
+        - "area/release"
+      #     {{ if .pr.reviewers }}
+      reviewers:
+        #     {{ range .pr.reviewers }}
+        - "{{ . }}"
+        #     {{ end }}
+      #     {{ end }}
+      draft: false

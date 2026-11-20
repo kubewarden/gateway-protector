@@ -18,6 +18,16 @@
   ],
   "packageRules": [
     {
+      "description": "The release PR of updatecli sets the image tags in the chart values. Renovate must not change them",
+      "matchManagers": [
+        "helm-values"
+      ],
+      "matchFileNames": [
+        "charts/gateway-protector/values.yaml"
+      ],
+      "enabled": false
+    },
+    {
       "description": "Update the Makefile pin and the CI action of golangci-lint together",
       "groupName": "golangci-lint",
       "matchPackageNames": [

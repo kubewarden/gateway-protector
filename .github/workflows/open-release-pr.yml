@@ -1,0 +1,77 @@
+name: Open release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example v0.2.0 or v0.2.0-rc.1"
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  open-release-pr:
+    name: Open the release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # updatecli skips a pipeline with a bad source and still exits 0, so
+      # check the version here to make the run fail.
+      - name: Check the format of the version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::The version must look like v1.2.3 or v1.2.3-rc.1, not '${RELEASE_VERSION}'"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: generate-token
+        with:
+          app-id: ${{ secrets.APP_ID }} # zizmor: ignore[secrets-outside-env]
+          private-key: ${{ secrets.APP_PRIVATE_KEY }} # zizmor: ignore[secrets-outside-env]
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          # minimum permissions for updatecli to push a branch and open a PR:
+          permission-contents: write
+          permission-pull-requests: write
+          permission-members: read # request reviews from the teams in .pr.reviewers
+
+      - name: Install Updatecli in the runner
+        uses: updatecli/updatecli-action@93ae2608256484ef8598e902aa675bbc9e278e4e # v3.10.0
+
+      - name: Delete the updatecli working branch (and close existing PR)
+        # Workaround for https://github.com/updatecli/updatecli/issues/11278 :
+        #   Updatecli reuses an existing working branch. If that branch is behind
+        #   main, updatecli v0.123.0 force-pushes main over its own commits and
+        #   opens no PR. Deleting the branch also closes any open release PR.
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          # From the "branch" value in updatecli/values.yaml and the
+          # "pipelineid" in updatecli/updatecli.d/open-release-pr.yaml
+          WORKING_BRANCH: updatecli_main_release_pr
+        run: |-
+          matches=$(gh api "repos/$REPO/git/matching-refs/heads/$WORKING_BRANCH" \
+            --jq 'map(select(.ref == "refs/heads/" + env.WORKING_BRANCH)) | length')
+          if [ "$matches" -gt 0 ]; then
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$WORKING_BRANCH"
+            echo "Deleted branch $WORKING_BRANCH"
+          else
+            echo "Branch $WORKING_BRANCH does not exist"
+          fi
+
+      - name: Open PR with updatecli
+        env:
+          UPDATECLI_GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+          UPDATECLI_GITHUB_OWNER: ${{ github.repository_owner }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |-
+          updatecli compose apply --file ./updatecli/open-release-pr.yaml

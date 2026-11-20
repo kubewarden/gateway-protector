@@ -1,0 +1,6 @@
+policies:
+  - name: Open release PR
+    config:
+      - ./updatecli.d/open-release-pr.yaml
+    values:
+      - ./values.yaml

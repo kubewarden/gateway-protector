@@ -1,0 +1,11 @@
+github:
+  owner: "UPDATECLI_GITHUB_OWNER"
+  token: "UPDATECLI_GITHUB_TOKEN"
+  repo: "gateway-protector"
+  branch: "main"
+  author: "Kubewarden bot"
+  email: "cncf-kubewarden-maintainers@lists.cncf.io"
+
+pr:
+  reviewers:
+    - "kubewarden/kubewarden-developers"
