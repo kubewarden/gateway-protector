@@ -5,10 +5,11 @@ update_settings(k8s_upsert_timeout_secs=300)
 
 # Install the Kubernetes Gateway API CRDs (Gateway, HTTPRoute, ...) that
 # both agentgateway and this project's WAFPolicy/WAFRuleSet CRDs build on.
-# Pinned to the same version this repo's go.mod depends on
-# (sigs.k8s.io/gateway-api), so the installed CRDs match the Go types
-# compiled into the controller.
-gateway_api_version = "v1.5.0"
+# Use the version of sigs.k8s.io/gateway-api in go.mod, so the installed
+# CRDs match the Go types compiled into the controller.
+gateway_api_version = str(
+    local("go list -m -f '{{.Version}}' sigs.k8s.io/gateway-api", quiet=True)
+).strip()
 local_resource(
     "gateway-api-crds",
     cmd="kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/{}/standard-install.yaml".format(
