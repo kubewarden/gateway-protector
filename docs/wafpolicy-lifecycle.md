@@ -299,7 +299,7 @@ the route's traffic through the processor's `ext_proc` service (see
 - **`backendRef`** points at the processor Service (fixed name
   `gateway-protector-processor`, port 9000, in the controller's own
   namespace - a cross-namespace ref, which agentgateway permits without a
-  `ReferenceGrant` under its default `BACKEND_REF_GRANT_MODE=route`; the
+  `ReferenceGrant` under its default `AGW_BACKEND_REF_GRANT_MODE=route`; the
   stricter `route-and-policy` mode would require one in the controller's
   namespace).
 - **`processingOptions` are sized to what the route's engines actually
