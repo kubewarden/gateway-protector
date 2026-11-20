@@ -1,0 +1,32 @@
+name: Scorecards supply-chain security
+on:
+  push:
+    branches: [main]
+
+# Declare default permissions as read only.
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecards analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to upload the results to code-scanning dashboard.
+      security-events: write
+      # Used to receive a badge. (Upcoming feature)
+      id-token: write
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run analysis"
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publish the results for public repositories to enable scorecard badges. For more details, see
+          # https://github.com/ossf/scorecard-action#publishing-results.
+          publish_results: true
