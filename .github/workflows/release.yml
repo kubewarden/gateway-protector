@@ -10,8 +10,43 @@ permissions:
   contents: read
 
 jobs:
+  version-check:
+    name: Check that the chart matches the tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The "Open release PR" workflow writes these values. A mismatch means
+      # that the tag was pushed without that PR.
+      - name: Compare the chart with the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -e
+          chart=charts/gateway-protector/Chart.yaml
+          values=charts/gateway-protector/values.yaml
+          failed=0
+
+          check() {
+            if [ "$2" != "$3" ]; then
+              echo "::error title=Chart does not match the tag::$1 is '$2', expected '$3'. Run the \"Open release PR\" workflow and merge its PR before you push the tag."
+              failed=1
+            fi
+          }
+
+          check "version in $chart" "$(yq '.version' "$chart")" "${TAG#v}"
+          check "appVersion in $chart" "$(yq '.appVersion' "$chart")" "$TAG"
+          check "controller.image.tag in $values" "$(yq '.controller.image.tag' "$values")" "$TAG"
+          check "processor.image.tag in $values" "$(yq '.processor.image.tag' "$values")" "$TAG"
+
+          exit "$failed"
+
   ci:
     name: Run CI
+    needs: version-check
     uses: $/.github/workflows/ci.yml
     permissions:
       contents: read
@@ -20,6 +55,7 @@ jobs:
 
   build-containers:
     name: Build, sign and attest container images
+    needs: version-check
     permissions:
       contents: read # Checkout the source
       packages: write # Pushing images to ghcr.io
