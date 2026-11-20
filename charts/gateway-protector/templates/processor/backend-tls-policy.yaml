@@ -19,7 +19,7 @@ apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
 metadata:
   name: {{ include "gateway-protector.fullname" . }}-processor-backend-tls
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "gateway-protector.namespace" . | quote }}
   labels:
     {{ include "gateway-protector.labels" . | nindent 4 }}
     app.kubernetes.io/component: processor
@@ -34,4 +34,4 @@ spec:
         - name: gateway-protector-agentgateway-client-cert
       caCertificateRefs:
         - name: gateway-protector-ca-bundle
-      sni: gateway-protector-processor.{{ .Release.Namespace }}.svc
+      sni: gateway-protector-processor.{{ include "gateway-protector.namespace" . }}.svc

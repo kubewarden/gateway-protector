@@ -8,7 +8,8 @@ tests:
   - it: should run the controller image from the values
     set:
       controller.image:
-        repository: registry.example.com/custom/controller
+        registry: registry.example.com
+        repository: custom/controller
         tag: v9.9.9
         pullPolicy: Always
     asserts:
@@ -77,6 +78,20 @@ tests:
           content:
             name: config-stream
             containerPort: 9002
+
+  - it: should pass the log level to the controller
+    set:
+      controller.logLevel: debug
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --log-level=debug
+
+  - it: should pass the global log level to the controller by default
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --log-level=info
 
   - it: should pass the namespace of the pod to the controller
     asserts:

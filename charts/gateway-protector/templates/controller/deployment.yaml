@@ -1,23 +1,29 @@
+{{- $ctx := dict "root" $ "workload" "controller" "component" "controller" }}
+{{- $w := .Values.controller }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "gateway-protector.fullname" . }}-controller
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{ include "gateway-protector.labels" . | nindent 4 }}
-    app.kubernetes.io/component: controller
+  namespace: {{ include "gateway-protector.namespace" . | quote }}
+  {{- include "gateway-protector.workloadLabels" $ctx | nindent 2 }}
+  {{- with include "gateway-protector.workloadAnnotations" $ctx }}{{ . | nindent 2 }}{{ end }}
 spec:
   selector:
     matchLabels:
-      {{ include "gateway-protector.selectorLabels" . | nindent 6 }}
+      {{- include "gateway-protector.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: controller
-  replicas: {{ .Values.controller.replicas }}
+  replicas: {{ $w.replicas }}
   template:
     metadata:
-      labels:
-        {{ include "gateway-protector.labels" . | nindent 8 }}
-        app.kubernetes.io/component: controller
+      {{- include "gateway-protector.podLabels" $ctx | nindent 6 }}
+      {{- with include "gateway-protector.podAnnotations" $ctx }}{{ . | nindent 6 }}{{ end }}
     spec:
+      {{- with include "gateway-protector.priorityClassName" $ctx }}{{ . | nindent 6 }}{{ end }}
+      {{- with include "gateway-protector.imagePullSecrets" $ctx }}{{ . | nindent 6 }}{{ end }}
+      {{- with include "gateway-protector.nodeSelector" $ctx }}{{ . | nindent 6 }}{{ end }}
+      {{- with include "gateway-protector.affinity" $ctx }}{{ . | nindent 6 }}{{ end }}
+      {{- with include "gateway-protector.tolerations" $ctx }}{{ . | nindent 6 }}{{ end }}
+      {{- with include "gateway-protector.topologySpreadConstraints" $ctx }}{{ . | nindent 6 }}{{ end }}
       containers:
         - command:
             - /controller
@@ -27,16 +33,23 @@ spec:
             - --metrics-bind-address=:8443
             - --config-stream-bind-address=:9002
             - --config-stream-cert-dir=/config-stream-certs
-          image: '{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}'
-          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+            {{- with include "gateway-protector.logLevel" $ctx }}
+            - --log-level={{ . }}
+            {{- end }}
+          image: {{ include "gateway-protector.image" $ctx | quote }}
+          imagePullPolicy: {{ include "gateway-protector.imagePullPolicy" $ctx }}
           name: controller
           env:
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- with include "gateway-protector.extraEnv" $ctx }}{{ . | nindent 12 }}{{ end }}
+          {{- with include "gateway-protector.extraEnvFrom" $ctx }}{{ . | nindent 10 }}{{ end }}
+          {{- with $w.containerSecurityContext }}
           securityContext:
-            {{ include "gateway-protector.securityContext" . | nindent 12 }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: config-stream
               containerPort: 9002
@@ -52,9 +65,9 @@ spec:
               port: 8081
             initialDelaySeconds: 5
             periodSeconds: 10
-          {{- if and .Values.controller .Values.controller.resources }}
+          {{- with $w.resources }}
           resources:
-{{ toYaml .Values.controller.resources | indent 12 }}
+            {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
             - mountPath: "/tmp"
@@ -62,11 +75,17 @@ spec:
             - mountPath: "/config-stream-certs"
               name: config-stream-certs
               readOnly: true
+            {{- with include "gateway-protector.extraVolumeMounts" $ctx }}{{ . | nindent 12 }}{{ end }}
       volumes:
         - name: tmp
           emptyDir: {}
         - name: config-stream-certs
           secret:
             secretName: gateway-protector-controller-cert
+        {{- with include "gateway-protector.extraVolumes" $ctx }}{{ . | nindent 8 }}{{ end }}
+      {{- with $w.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       serviceAccountName: {{ include "gateway-protector.fullname" . }}-controller
       terminationGracePeriodSeconds: 10

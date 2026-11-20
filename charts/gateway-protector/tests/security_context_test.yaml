@@ -1,18 +1,21 @@
-suite: container security contexts
+suite: security contexts
 templates:
   - controller/deployment.yaml
   - processor/deployment.yaml
 tests:
-  - it: should harden the security context of each container
+  - it: should harden the pod and the container of each workload by default
     asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
       - equal:
           path: spec.template.spec.containers[0].securityContext
           value:
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
             runAsUser: 65532
-            seccompProfile:
-              type: RuntimeDefault
+            readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:
               drop:

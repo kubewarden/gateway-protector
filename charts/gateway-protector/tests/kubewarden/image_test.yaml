@@ -1,0 +1,53 @@
+suite: "Values contract: images"
+templates:
+  - "templates/controller/deployment.yaml"
+  - "templates/processor/deployment.yaml"
+tests:
+  # The tag pattern is loose, because the release PR updates the default tags.
+  - it: "should render the default image for each workload"
+    asserts:
+      - matchRegex:
+          path: "spec.template.spec.containers[0].image"
+          pattern: "^ghcr\\.io/kubewarden/gateway-protector/controller:[^:/]+$"
+        template: "templates/controller/deployment.yaml"
+      - matchRegex:
+          path: "spec.template.spec.containers[0].image"
+          pattern: "^ghcr\\.io/kubewarden/gateway-protector/processor:[^:/]+$"
+        template: "templates/processor/deployment.yaml"
+
+  - it: "should change only the tag with <name>.image.tag"
+    set:
+      controller:
+        image:
+          tag: v9.9.9-controller
+      processor:
+        image:
+          tag: v9.9.9-processor
+    asserts:
+      - equal:
+          path: "spec.template.spec.containers[0].image"
+          value: "ghcr.io/kubewarden/gateway-protector/controller:v9.9.9-controller"
+        template: "templates/controller/deployment.yaml"
+      - equal:
+          path: "spec.template.spec.containers[0].image"
+          value: "ghcr.io/kubewarden/gateway-protector/processor:v9.9.9-processor"
+        template: "templates/processor/deployment.yaml"
+
+  - it: "should change only the repository with <name>.image.repository"
+    set:
+      controller:
+        image:
+          tag: 1.0.0
+      processor:
+        image:
+          repository: example/processor
+          tag: 2.0.0
+    asserts:
+      - equal:
+          path: "spec.template.spec.containers[0].image"
+          value: "ghcr.io/example/processor:2.0.0"
+        template: "templates/processor/deployment.yaml"
+      - equal:
+          path: "spec.template.spec.containers[0].image"
+          value: "ghcr.io/kubewarden/gateway-protector/controller:1.0.0"
+        template: "templates/controller/deployment.yaml"

@@ -1,46 +1,56 @@
+{{- $ctx := dict "root" $ "workload" "processor" "component" "processor" }}
+{{- $w := .Values.processor }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "gateway-protector.fullname" . }}-processor
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{ include "gateway-protector.labels" . | nindent 4 }}
-    app.kubernetes.io/component: processor
+  namespace: {{ include "gateway-protector.namespace" . | quote }}
+  {{- include "gateway-protector.workloadLabels" $ctx | nindent 2 }}
+  {{- with include "gateway-protector.workloadAnnotations" $ctx }}{{ . | nindent 2 }}{{ end }}
 spec:
   selector:
     matchLabels:
-      {{ include "gateway-protector.selectorLabels" . | nindent 6 }}
+      {{- include "gateway-protector.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: processor
-  replicas: {{ .Values.processor.replicas }}
+  replicas: {{ $w.replicas }}
   template:
     metadata:
-      labels:
-        {{ include "gateway-protector.labels" . | nindent 8 }}
-        app.kubernetes.io/component: processor
+      {{- include "gateway-protector.podLabels" $ctx | nindent 6 }}
+      {{- with include "gateway-protector.podAnnotations" $ctx }}{{ . | nindent 6 }}{{ end }}
     spec:
+      {{- with include "gateway-protector.priorityClassName" $ctx }}{{ . | nindent 6 }}{{ end }}
+      {{- with include "gateway-protector.imagePullSecrets" $ctx }}{{ . | nindent 6 }}{{ end }}
+      {{- with include "gateway-protector.nodeSelector" $ctx }}{{ . | nindent 6 }}{{ end }}
+      {{- with include "gateway-protector.affinity" $ctx }}{{ . | nindent 6 }}{{ end }}
+      {{- with include "gateway-protector.tolerations" $ctx }}{{ . | nindent 6 }}{{ end }}
+      {{- with include "gateway-protector.topologySpreadConstraints" $ctx }}{{ . | nindent 6 }}{{ end }}
       containers:
         - command:
             - /processor
           args:
             - --grpc-bind-address=:9000
             - --health-bind-address=:9001
-            - --config-server-address=gateway-protector-controller-config-stream.{{ .Release.Namespace }}.svc:9002
+            - --config-server-address=gateway-protector-controller-config-stream.{{ include "gateway-protector.namespace" . }}.svc:9002
             - --subscriber-id=$(POD_NAME)
             - --config-stream-cert-dir=/config-stream-certs
             - --ext-proc-cert-dir=/ext-proc-certs
-            {{- if .Values.processor.logLevel }}
-            - --log-level={{ .Values.processor.logLevel }}
+            {{- with include "gateway-protector.logLevel" $ctx }}
+            - --log-level={{ . }}
             {{- end }}
-          image: '{{ .Values.processor.image.repository }}:{{ .Values.processor.image.tag }}'
-          imagePullPolicy: {{ .Values.processor.image.pullPolicy }}
+          image: {{ include "gateway-protector.image" $ctx | quote }}
+          imagePullPolicy: {{ include "gateway-protector.imagePullPolicy" $ctx }}
           name: processor
           env:
             - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            {{- with include "gateway-protector.extraEnv" $ctx }}{{ . | nindent 12 }}{{ end }}
+          {{- with include "gateway-protector.extraEnvFrom" $ctx }}{{ . | nindent 10 }}{{ end }}
+          {{- with $w.containerSecurityContext }}
           securityContext:
-            {{ include "gateway-protector.securityContext" . | nindent 12 }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: grpc
               containerPort: 9000
@@ -56,9 +66,9 @@ spec:
               port: 9001
             initialDelaySeconds: 5
             periodSeconds: 10
-          {{- if and .Values.processor .Values.processor.resources }}
+          {{- with $w.resources }}
           resources:
-{{ toYaml .Values.processor.resources | indent 12 }}
+            {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
             - mountPath: "/tmp"
@@ -69,6 +79,7 @@ spec:
             - mountPath: "/ext-proc-certs"
               name: ext-proc-certs
               readOnly: true
+            {{- with include "gateway-protector.extraVolumeMounts" $ctx }}{{ . | nindent 12 }}{{ end }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -78,4 +89,13 @@ spec:
         - name: ext-proc-certs
           secret:
             secretName: gateway-protector-processor-server-cert
+        {{- with include "gateway-protector.extraVolumes" $ctx }}{{ . | nindent 8 }}{{ end }}
+      {{- with $w.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # The processor does not call the Kubernetes API, so its
+      # ServiceAccount has no RBAC rules and no token in the pod.
+      serviceAccountName: {{ include "gateway-protector.fullname" . }}-processor
+      automountServiceAccountToken: false
       terminationGracePeriodSeconds: 10

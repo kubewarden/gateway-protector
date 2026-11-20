@@ -1,7 +1,3 @@
-# Default values for gateway-protector.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
-
 # nameOverride replaces the chart name used when generating resource names,
 # while still keeping the release name as a prefix (e.g. `<release-name>-<nameOverride>`).
 # Leave empty to use the chart name.
@@ -11,35 +7,188 @@ nameOverride: ""
 # Leave empty to use the default generated name.
 fullnameOverride: ""
 
+# namespaceOverride sets the namespace for all namespaced resources of this chart.
+# Leave empty to use the release namespace.
+namespaceOverride: ""
+
+# global holds the settings for all workloads: controller and processor.
+# A parent chart can also set these keys.
+# A `common` block with the same keys, except imageRegistry, is also accepted.
+# It applies to all workloads of this chart only, and it wins over global.
+global:
+  # Registry for all chart images.
+  # If you set it, it replaces the image.registry of every workload block.
+  imageRegistry: ""
+  # Secrets that the kubelet uses to pull the chart images.
+  # Each item is a Secret name or a map with a name key,
+  # for example [my-secret] or [{name: my-secret}].
+  # The chart adds the items of global, common, and the workload block, in this order.
+  imagePullSecrets: []
+  # Pull policy for the chart images: Always, IfNotPresent, or Never.
+  # The image.pullPolicy of a workload block replaces it.
+  imagePullPolicy: IfNotPresent
+  # Log level for the controller and the processor: debug, info, warn, or error.
+  logLevel: info # @schema enum: [debug, info, warn, error]
+  # Labels for the workload objects (Deployments).
+  # @schema additionalProperties:true
+  labels: {}
+  # Annotations for the workload objects (Deployments).
+  # @schema additionalProperties:true
+  annotations: {}
+  # Labels for the pods.
+  # @schema additionalProperties:true
+  podLabels: {}
+  # Annotations for the pods.
+  # @schema additionalProperties:true
+  podAnnotations: {}
+  # Node labels that a node must have to run the pods.
+  # @schema additionalProperties:true
+  nodeSelector: {}
+  # Tolerations for the pods.
+  # @schema itemRef: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.Toleration; item:object
+  tolerations: []
+  # Affinity rules for the pods.
+  # @schema $ref: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.Affinity
+  affinity: {}
+  # Topology spread constraints for the pods.
+  # @schema itemRef: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.TopologySpreadConstraint; item:object
+  topologySpreadConstraints: []
+  # PriorityClass for the pods. The chart does not create a PriorityClass.
+  priorityClassName: ""
+  # Extra environment variables for all containers.
+  # @schema itemRef: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.EnvVar; item:object
+  extraEnv: []
+  # Extra envFrom sources (ConfigMaps or Secrets) for all containers.
+  # @schema itemRef: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.EnvFromSource; item:object
+  extraEnvFrom: []
+  # Extra volumes for the pods.
+  # @schema itemRef: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.Volume; item:object
+  extraVolumes: []
+  # Extra volume mounts for all containers.
+  # @schema itemRef: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.VolumeMount; item:object
+  extraVolumeMounts: []
+  serviceAccount:
+    # Annotations for the ServiceAccounts of the workloads.
+    # @schema additionalProperties:true
+    annotations: {}
+  # Telemetry export configuration, shared with the other Kubewarden charts.
+  # The controller and the processor do not export telemetry yet, so these
+  # keys have no effect. See https://github.com/kubewarden/gateway-protector/issues/23.
+  otel:
+    # OTLP gRPC endpoint to export telemetry to, e.g. https://otel-collector:4317.
+    endpoint: ""
+    # Name of the secret with the CA certificate (key `ca.crt`) that verifies the collector.
+    caSecretName: ""
+    # Name of the secret with the client certificate (keys `tls.crt` and `tls.key`) for mTLS.
+    clientCertificateSecretName: ""
+
+# Each workload block also accepts every key of global,
+# except imageRegistry and imagePullPolicy: a workload block sets them in image.registry and image.pullPolicy.
+# A value in a workload block replaces the value in global and common.
+# Maps (labels, annotations, nodeSelector, affinity, ...) merge, and the workload wins on a duplicate key.
+# Lists of named items (extraEnv, extraVolumes, extraVolumeMounts, imagePullSecrets) add up.
+# Exception: global.imageRegistry wins over the image.registry of a workload block.
+
+# controller reconciles the WAFPolicy objects. It generates the
+# AgentgatewayPolicy objects that wire agentgateway to the processor, and it
+# streams the WAF configuration to the processor.
 controller:
   image:
-    repository: ghcr.io/kubewarden/gateway-protector/controller
+    # The image path used by the controller, without the registry.
+    # @schema required
+    repository: kubewarden/gateway-protector/controller
+    # The image tag used by the controller.
+    # @schema required
     tag: latest
-    pullPolicy: IfNotPresent
+    # Registry for the image. global.imageRegistry replaces it when set.
+    registry: ghcr.io
+    # Pull policy for the image. If it is empty, the chart uses common.imagePullPolicy, then global.imagePullPolicy.
+    pullPolicy: ""
   replicas: 1
-  logLevel: "info"
+  # @schema $ref: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.ResourceRequirements
   resources:
+    # @schema hidden
     limits:
       cpu: 500m
       memory: 256Mi
+    # @schema hidden
     requests:
       cpu: 100m
       memory: 128Mi
+  # The podSecurityContext used by the controller pods.
+  # @schema $ref: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.PodSecurityContext
+  podSecurityContext:
+    # @schema hidden
+    runAsNonRoot: true
+    # @schema hidden
+    seccompProfile:
+      type: RuntimeDefault
+  # The containerSecurityContext used by the controller container.
+  # @schema $ref: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.SecurityContext
+  containerSecurityContext:
+    # @schema hidden
+    runAsUser: 65532
+    # @schema hidden
+    readOnlyRootFilesystem: true
+    # @schema hidden
+    allowPrivilegeEscalation: false
+    # @schema hidden
+    capabilities:
+      drop:
+        - ALL
+  # PodDisruptionBudget for the pods.
+  # If you set minAvailable or maxUnavailable, the chart creates the PodDisruptionBudget.
+  # @schema additionalProperties:true
+  podDisruptionBudget: {}
 
 # processor is the Envoy ext_proc gRPC service that runs the WAF (and, in the
 # future, DLP). It is the backendRef target of the AgentgatewayPolicy objects the
 # controller generates.
 processor:
   image:
-    repository: ghcr.io/kubewarden/gateway-protector/processor
+    # The image path used by the processor, without the registry.
+    # @schema required
+    repository: kubewarden/gateway-protector/processor
+    # The image tag used by the processor.
+    # @schema required
     tag: latest
-    pullPolicy: IfNotPresent
+    # Registry for the image. global.imageRegistry replaces it when set.
+    registry: ghcr.io
+    # Pull policy for the image. If it is empty, the chart uses common.imagePullPolicy, then global.imagePullPolicy.
+    pullPolicy: ""
   replicas: 1
-  logLevel: "info"
+  # @schema $ref: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.ResourceRequirements
   resources:
+    # @schema hidden
     limits:
       cpu: 500m
       memory: 256Mi
+    # @schema hidden
     requests:
       cpu: 100m
       memory: 128Mi
+  # The podSecurityContext used by the processor pods.
+  # @schema $ref: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.PodSecurityContext
+  podSecurityContext:
+    # @schema hidden
+    runAsNonRoot: true
+    # @schema hidden
+    seccompProfile:
+      type: RuntimeDefault
+  # The containerSecurityContext used by the processor container.
+  # @schema $ref: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.SecurityContext
+  containerSecurityContext:
+    # @schema hidden
+    runAsUser: 65532
+    # @schema hidden
+    readOnlyRootFilesystem: true
+    # @schema hidden
+    allowPrivilegeEscalation: false
+    # @schema hidden
+    capabilities:
+      drop:
+        - ALL
+  # PodDisruptionBudget for the pods.
+  # If you set minAvailable or maxUnavailable, the chart creates the PodDisruptionBudget.
+  # @schema additionalProperties:true
+  podDisruptionBudget: {}

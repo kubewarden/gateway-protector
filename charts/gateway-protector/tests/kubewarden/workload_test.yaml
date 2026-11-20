@@ -1,0 +1,324 @@
+suite: "Values contract: workload-only keys"
+templates:
+  - "templates/controller/deployment.yaml"
+  - "templates/processor/deployment.yaml"
+tests:
+  - it: "should render the resources and security contexts of each workload block on its own workload"
+    set:
+      controller:
+        resources: {limits: {cpu: "1"}}
+        podSecurityContext: {fsGroup: 1001}
+        containerSecurityContext: {runAsUser: 1001}
+      processor:
+        resources: {limits: {cpu: "2"}}
+        podSecurityContext: {fsGroup: 1002}
+        containerSecurityContext: {runAsUser: 1002}
+    asserts:
+      - equal: {path: "spec.template.spec.containers[0].resources.limits.cpu", value: "1"}
+        template: "templates/controller/deployment.yaml"
+      - equal: {path: "spec.template.spec.securityContext.fsGroup", value: 1001}
+        template: "templates/controller/deployment.yaml"
+      - equal: {path: "spec.template.spec.containers[0].securityContext.runAsUser", value: 1001}
+        template: "templates/controller/deployment.yaml"
+      - equal: {path: "spec.template.spec.containers[0].resources.limits.cpu", value: "2"}
+        template: "templates/processor/deployment.yaml"
+      - equal: {path: "spec.template.spec.securityContext.fsGroup", value: 1002}
+        template: "templates/processor/deployment.yaml"
+      - equal: {path: "spec.template.spec.containers[0].securityContext.runAsUser", value: 1002}
+        template: "templates/processor/deployment.yaml"
+
+  - it: "should render processor.resources on the processor only"
+    set:
+      processor:
+        resources:
+          limits:
+            memory: 4Gi
+    asserts:
+      - equal:
+          path: "spec.template.spec.containers[0].resources.limits.memory"
+          value: 4Gi
+        template: "templates/processor/deployment.yaml"
+      - equal:
+          path: "spec.template.spec.containers[0].resources.limits.memory"
+          value: 256Mi
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render controller.image.registry and processor.image.registry on their own workload only"
+    set:
+      controller:
+        image:
+          registry: controller.example.com
+      processor:
+        image:
+          registry: processor.example.com
+    asserts:
+      - matchRegex:
+          path: "spec.template.spec.containers[0].image"
+          pattern: "^controller\\.example\\.com/"
+        template: "templates/controller/deployment.yaml"
+      - matchRegex:
+          path: "spec.template.spec.containers[0].image"
+          pattern: "^processor\\.example\\.com/kubewarden/gateway-protector/processor:"
+        template: "templates/processor/deployment.yaml"
+
+  # gateway-protector cases
+  - it: "should render processor.imagePullSecrets on the processor only"
+    set:
+      processor:
+        imagePullSecrets:
+          - name: processor-secret
+    asserts:
+      - equal:
+          path: "spec.template.spec.imagePullSecrets"
+          value:
+            - name: processor-secret
+        template: "templates/processor/deployment.yaml"
+      - notExists:
+          path: "spec.template.spec.imagePullSecrets"
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render processor.image.pullPolicy on the processor only"
+    set:
+      processor:
+        image:
+          pullPolicy: Always
+    asserts:
+      - equal:
+          path: "spec.template.spec.containers[0].imagePullPolicy"
+          value: Always
+        template: "templates/processor/deployment.yaml"
+      - equal:
+          path: "spec.template.spec.containers[0].imagePullPolicy"
+          value: IfNotPresent
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render controller.logLevel on the controller only"
+    set:
+      controller:
+        logLevel: debug
+    asserts:
+      - contains:
+          path: "spec.template.spec.containers[0].args"
+          content: "--log-level=debug"
+        template: "templates/controller/deployment.yaml"
+      - contains:
+          path: "spec.template.spec.containers[0].args"
+          content: "--log-level=info"
+        template: "templates/processor/deployment.yaml"
+
+  - it: "should render processor.labels on the processor only"
+    set:
+      processor:
+        labels:
+          team: processor
+    asserts:
+      - equal:
+          path: "metadata.labels.team"
+          value: processor
+        template: "templates/processor/deployment.yaml"
+      - notExists:
+          path: "metadata.labels.team"
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render processor.annotations on the processor only"
+    set:
+      processor:
+        annotations:
+          example.com/owner: processor
+    asserts:
+      - equal:
+          path: "metadata.annotations[\"example.com/owner\"]"
+          value: processor
+        template: "templates/processor/deployment.yaml"
+      - notExists:
+          path: "metadata.annotations"
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render processor.podLabels on the processor only"
+    set:
+      processor:
+        podLabels:
+          team: processor
+    asserts:
+      - equal:
+          path: "spec.template.metadata.labels.team"
+          value: processor
+        template: "templates/processor/deployment.yaml"
+      - notExists:
+          path: "spec.template.metadata.labels.team"
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render processor.podAnnotations on the processor only"
+    set:
+      processor:
+        podAnnotations:
+          example.com/owner: processor
+    asserts:
+      - equal:
+          path: "spec.template.metadata.annotations[\"example.com/owner\"]"
+          value: processor
+        template: "templates/processor/deployment.yaml"
+      - notExists:
+          path: "spec.template.metadata.annotations"
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render processor.nodeSelector on the processor only"
+    set:
+      processor:
+        nodeSelector:
+          kubernetes.io/os: linux
+    asserts:
+      - equal:
+          path: "spec.template.spec.nodeSelector"
+          value:
+            kubernetes.io/os: linux
+        template: "templates/processor/deployment.yaml"
+      - notExists:
+          path: "spec.template.spec.nodeSelector"
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render controller.affinity on the controller only"
+    set:
+      controller:
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  topologyKey: kubernetes.io/hostname
+    asserts:
+      - equal:
+          path: "spec.template.spec.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].weight"
+          value: 100
+        template: "templates/controller/deployment.yaml"
+      - notExists:
+          path: "spec.template.spec.affinity"
+        template: "templates/processor/deployment.yaml"
+
+  - it: "should render processor.tolerations on the processor only"
+    set:
+      processor:
+        tolerations:
+          - operator: Exists
+    asserts:
+      - equal:
+          path: "spec.template.spec.tolerations"
+          value:
+            - operator: Exists
+        template: "templates/processor/deployment.yaml"
+      - notExists:
+          path: "spec.template.spec.tolerations"
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render controller.topologySpreadConstraints on the controller only"
+    set:
+      controller:
+        topologySpreadConstraints:
+          - maxSkew: 1
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: ScheduleAnyway
+    asserts:
+      - equal:
+          path: "spec.template.spec.topologySpreadConstraints[0].maxSkew"
+          value: 1
+        template: "templates/controller/deployment.yaml"
+      - notExists:
+          path: "spec.template.spec.topologySpreadConstraints"
+        template: "templates/processor/deployment.yaml"
+
+  - it: "should render processor.priorityClassName on the processor only"
+    set:
+      processor:
+        priorityClassName: system-cluster-critical
+    asserts:
+      - equal:
+          path: "spec.template.spec.priorityClassName"
+          value: system-cluster-critical
+        template: "templates/processor/deployment.yaml"
+      - notExists:
+          path: "spec.template.spec.priorityClassName"
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render processor.extraEnv on the processor only"
+    set:
+      processor:
+        extraEnv:
+          - name: PROCESSOR_ONLY
+            value: "1"
+    asserts:
+      - contains:
+          path: "spec.template.spec.containers[0].env"
+          content:
+            name: PROCESSOR_ONLY
+            value: "1"
+        template: "templates/processor/deployment.yaml"
+      - notContains:
+          path: "spec.template.spec.containers[0].env"
+          content:
+            name: PROCESSOR_ONLY
+            value: "1"
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render processor.extraEnvFrom on the processor only"
+    set:
+      processor:
+        extraEnvFrom:
+          - secretRef:
+              name: processor-env
+    asserts:
+      - equal:
+          path: "spec.template.spec.containers[0].envFrom"
+          value:
+            - secretRef:
+                name: processor-env
+        template: "templates/processor/deployment.yaml"
+      - notExists:
+          path: "spec.template.spec.containers[0].envFrom"
+        template: "templates/controller/deployment.yaml"
+
+  - it: "should render controller.extraVolumes and controller.extraVolumeMounts on the controller only"
+    set:
+      controller:
+        extraVolumes:
+          - name: scratch
+            emptyDir: {}
+        extraVolumeMounts:
+          - name: scratch
+            mountPath: /scratch
+    asserts:
+      - contains:
+          path: "spec.template.spec.volumes"
+          content:
+            name: scratch
+            emptyDir: {}
+        template: "templates/controller/deployment.yaml"
+      - contains:
+          path: "spec.template.spec.containers[0].volumeMounts"
+          content:
+            name: scratch
+            mountPath: /scratch
+        template: "templates/controller/deployment.yaml"
+      - notContains:
+          path: "spec.template.spec.volumes"
+          content:
+            name: scratch
+            emptyDir: {}
+        template: "templates/processor/deployment.yaml"
+      - notContains:
+          path: "spec.template.spec.containers[0].volumeMounts"
+          content:
+            name: scratch
+            mountPath: /scratch
+        template: "templates/processor/deployment.yaml"
+
+  - it: "should not render the security contexts when the values are empty"
+    set:
+      controller:
+        podSecurityContext: null
+        containerSecurityContext: null
+    template: "templates/controller/deployment.yaml"
+    asserts:
+      - notExists:
+          path: "spec.template.spec.securityContext"
+      - notExists:
+          path: "spec.template.spec.containers[0].securityContext"

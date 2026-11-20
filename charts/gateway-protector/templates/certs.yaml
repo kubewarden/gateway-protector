@@ -7,6 +7,8 @@
 #
 # Secret names and data keys here must match internal/certs/constants.go.
 
+{{ $namespace := include "gateway-protector.namespace" . }}
+
 {{ $ca := genCAWithKey "gateway-protector-ca" 3650 (genPrivateKey "ecdsa") }}
 {{ $caCert := ($ca.Cert | b64enc) }}
 {{ $caPrivateKey := ($ca.Key | b64enc) }}
@@ -22,7 +24,7 @@
 {{ $agentgatewayClientCert := "" }}
 {{ $agentgatewayClientKey := "" }}
 
-{{ $caSecret := (lookup "v1" "Secret" .Release.Namespace "gateway-protector-ca") }}
+{{ $caSecret := (lookup "v1" "Secret" $namespace "gateway-protector-ca") }}
 {{ if $caSecret }}
 {{ $caCert = (index $caSecret.data "tls.crt") }}
 {{ $caPrivateKey = (index $caSecret.data "tls.key") }}
@@ -34,9 +36,9 @@
 {{ $ca = buildCustomCert $caCert $caPrivateKey }}
 {{ end }}
 
-{{ $controllerServiceDNSName := printf "gateway-protector-controller-config-stream.%s.svc" .Release.Namespace }}
+{{ $controllerServiceDNSName := printf "gateway-protector-controller-config-stream.%s.svc" $namespace }}
 
-{{ $controllerCertSecret := (lookup "v1" "Secret" .Release.Namespace "gateway-protector-controller-cert") }}
+{{ $controllerCertSecret := (lookup "v1" "Secret" $namespace "gateway-protector-controller-cert") }}
 {{ if $controllerCertSecret }}
 {{ $controllerCert = (index $controllerCertSecret.data "tls.crt") }}
 {{ $controllerKey = (index $controllerCertSecret.data "tls.key") }}
@@ -46,7 +48,7 @@
 {{ $controllerKey = ($controllerCertKeyPair.Key | b64enc) }}
 {{ end }}
 
-{{ $processorCertSecret := (lookup "v1" "Secret" .Release.Namespace "gateway-protector-processor-client-cert") }}
+{{ $processorCertSecret := (lookup "v1" "Secret" $namespace "gateway-protector-processor-client-cert") }}
 {{ if $processorCertSecret }}
 {{ $processorCert = (index $processorCertSecret.data "tls.crt") }}
 {{ $processorKey = (index $processorCertSecret.data "tls.key") }}
@@ -56,9 +58,9 @@
 {{ $processorKey = ($processorCertKeyPair.Key | b64enc) }}
 {{ end }}
 
-{{ $processorServiceDNSName := printf "gateway-protector-processor.%s.svc" .Release.Namespace }}
+{{ $processorServiceDNSName := printf "gateway-protector-processor.%s.svc" $namespace }}
 
-{{ $processorServerCertSecret := (lookup "v1" "Secret" .Release.Namespace "gateway-protector-processor-server-cert") }}
+{{ $processorServerCertSecret := (lookup "v1" "Secret" $namespace "gateway-protector-processor-server-cert") }}
 {{ if $processorServerCertSecret }}
 {{ $processorServerCert = (index $processorServerCertSecret.data "tls.crt") }}
 {{ $processorServerKey = (index $processorServerCertSecret.data "tls.key") }}
@@ -68,7 +70,7 @@
 {{ $processorServerKey = ($processorServerCertKeyPair.Key | b64enc) }}
 {{ end }}
 
-{{ $agentgatewayClientCertSecret := (lookup "v1" "Secret" .Release.Namespace "gateway-protector-agentgateway-client-cert") }}
+{{ $agentgatewayClientCertSecret := (lookup "v1" "Secret" $namespace "gateway-protector-agentgateway-client-cert") }}
 {{ if $agentgatewayClientCertSecret }}
 {{ $agentgatewayClientCert = (index $agentgatewayClientCertSecret.data "tls.crt") }}
 {{ $agentgatewayClientKey = (index $agentgatewayClientCertSecret.data "tls.key") }}
@@ -82,7 +84,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: gateway-protector-ca
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "gateway-protector.namespace" . | quote }}
   labels:
     {{ include "gateway-protector.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller
@@ -98,7 +100,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: gateway-protector-controller-cert
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "gateway-protector.namespace" . | quote }}
   labels:
     {{ include "gateway-protector.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller
@@ -112,7 +114,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: gateway-protector-processor-client-cert
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "gateway-protector.namespace" . | quote }}
   labels:
     {{ include "gateway-protector.labels" . | nindent 4 }}
     app.kubernetes.io/component: processor
@@ -126,7 +128,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: gateway-protector-processor-server-cert
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "gateway-protector.namespace" . | quote }}
   labels:
     {{ include "gateway-protector.labels" . | nindent 4 }}
     app.kubernetes.io/component: processor
@@ -147,7 +149,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: gateway-protector-agentgateway-client-cert
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "gateway-protector.namespace" . | quote }}
   labels:
     {{ include "gateway-protector.labels" . | nindent 4 }}
     app.kubernetes.io/component: processor
@@ -163,7 +165,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: gateway-protector-ca-bundle
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "gateway-protector.namespace" . | quote }}
   labels:
     {{ include "gateway-protector.labels" . | nindent 4 }}
     app.kubernetes.io/component: processor

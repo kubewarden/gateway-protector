@@ -1,0 +1,16 @@
+{{- with .Values.controller.podDisruptionBudget }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "gateway-protector.fullname" $ }}-controller
+  namespace: {{ include "gateway-protector.namespace" $ | quote }}
+  labels:
+    {{- include "gateway-protector.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  {{- toYaml . | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "gateway-protector.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: controller
+{{- end }}

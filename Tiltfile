@@ -86,8 +86,10 @@ yaml = helm(
     name="gateway-protector",
     namespace="gateway-protector-system",
     set=[
-        "controller.image.repository=" + registry + "/" + controller_image,
-        "processor.image.repository=" + registry + "/" + processor_image,
+        "controller.image.registry=" + registry,
+        "controller.image.repository=" + controller_image,
+        "processor.image.registry=" + registry,
+        "processor.image.repository=" + processor_image,
         "controller.replicas=1",
         "processor.replicas=1",
         "processor.logLevel=debug",
@@ -97,9 +99,12 @@ yaml = helm(
 objects = decode_yaml_stream(yaml)
 for o in objects:
     if o.get('kind') == 'Deployment':
-        containers = o['spec']['template']['spec']['containers']
-        # Remove securityContext to allow hot reloading
-        for container in containers:
+        pod_spec = o['spec']['template']['spec']
+        # Remove securityContext to allow hot reloading: the Tilt images run
+        # as root, so runAsNonRoot of the pod would stop them.
+        if 'securityContext' in pod_spec:
+            pod_spec['securityContext'] = {}
+        for container in pod_spec['containers']:
             if 'securityContext' in container:
                 container['securityContext'] = {}
 updated_yaml = encode_yaml_stream(objects)

@@ -8,7 +8,8 @@ tests:
   - it: should run the processor image from the values
     set:
       processor.image:
-        repository: registry.example.com/custom/processor
+        registry: registry.example.com
+        repository: custom/processor
         tag: v9.9.9
         pullPolicy: Always
     asserts:
@@ -72,19 +73,21 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --log-level=debug
 
-  - it: should not pass a log level when the value is empty
-    set:
-      processor.logLevel: ""
+  - it: should pass the global log level to the processor by default
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --log-level=info
+
+  # The processor does not call the Kubernetes API.
+  - it: should run with its own ServiceAccount and without an API token
     asserts:
       - equal:
-          path: spec.template.spec.containers[0].args
-          value:
-            - --grpc-bind-address=:9000
-            - --health-bind-address=:9001
-            - --config-server-address=gateway-protector-controller-config-stream.gateway-protector-system.svc:9002
-            - --subscriber-id=$(POD_NAME)
-            - --config-stream-cert-dir=/config-stream-certs
-            - --ext-proc-cert-dir=/ext-proc-certs
+          path: spec.template.spec.serviceAccountName
+          value: gateway-protector-processor
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
 
   - it: should connect to the config stream Service of the release namespace
     release:

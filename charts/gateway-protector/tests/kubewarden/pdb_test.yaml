@@ -1,0 +1,80 @@
+suite: "Values contract: PodDisruptionBudgets"
+templates:
+  - "templates/controller/pdb.yaml"
+  - "templates/processor/pdb.yaml"
+tests:
+  - it: "should not render a PodDisruptionBudget by default"
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: "should render a PodDisruptionBudget for each workload that sets one"
+    release:
+      name: rel
+    set:
+      controller:
+        podDisruptionBudget:
+          minAvailable: 1
+      processor:
+        podDisruptionBudget:
+          minAvailable: 1
+    asserts:
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: "spec.minAvailable"
+          value: 1
+      - notExists:
+          path: "spec.maxUnavailable"
+      - equal:
+          path: "spec.selector.matchLabels"
+          value:
+            app.kubernetes.io/name: gateway-protector
+            app.kubernetes.io/instance: rel
+            app.kubernetes.io/component: controller
+        template: "templates/controller/pdb.yaml"
+      - equal:
+          path: "spec.selector.matchLabels"
+          value:
+            app.kubernetes.io/name: gateway-protector
+            app.kubernetes.io/instance: rel
+            app.kubernetes.io/component: processor
+        template: "templates/processor/pdb.yaml"
+
+  # gateway-protector cases
+  - it: "should name the PodDisruptionBudget after the workload"
+    release:
+      name: rel
+      namespace: ns
+    set:
+      processor:
+        podDisruptionBudget:
+          maxUnavailable: 25%
+    template: "templates/processor/pdb.yaml"
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: rel-gateway-protector-processor
+      - equal:
+          path: metadata.namespace
+          value: ns
+      - equal:
+          path: spec.maxUnavailable
+          value: 25%
+      - notExists:
+          path: spec.minAvailable
+
+  - it: "should render only the PodDisruptionBudget of the workload that sets one"
+    set:
+      controller:
+        podDisruptionBudget:
+          minAvailable: 1
+    asserts:
+      - hasDocuments:
+          count: 1
+        template: "templates/controller/pdb.yaml"
+      - hasDocuments:
+          count: 0
+        template: "templates/processor/pdb.yaml"

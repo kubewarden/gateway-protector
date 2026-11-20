@@ -129,7 +129,11 @@ manifests: ## Generate ClusterRole and CustomResourceDefinition objects. We use 
 
 .PHONY: generate-chart
 generate-chart: ## Generate Helm chart values schema.
-	$(HELM_SCHEMA) --values charts/gateway-protector/values.yaml --output charts/gateway-protector/values.schema.json
+	$(HELM_SCHEMA) \
+		--k8s-schema-version v1.31.0 \
+		--bundle --bundle-without-id --bundle-cache-min 24h \
+		--values charts/gateway-protector/values.yaml \
+		--output charts/gateway-protector/values.schema.json
 
 .PHONY: generate-docs
 generate-docs: ## Generate API documentation for CRDs.

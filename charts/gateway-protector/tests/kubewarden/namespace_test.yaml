@@ -1,0 +1,184 @@
+suite: "Values contract: namespaceOverride"
+templates:
+  - "templates/controller/deployment.yaml"
+  - "templates/processor/deployment.yaml"
+  - "templates/controller/service.yaml"
+  - "templates/processor/service.yaml"
+  - "templates/controller/serviceaccount.yaml"
+  - "templates/processor/serviceaccount.yaml"
+  - "templates/controller/certs_role.yaml"
+  - "templates/controller/certs_rolebinding.yaml"
+  - "templates/controller/leader_election_role.yaml"
+  - "templates/controller/leader_election_rolebinding.yaml"
+  - "templates/processor/backend-tls-policy.yaml"
+  - "templates/certs.yaml"
+release:
+  name: rel
+  namespace: release-ns
+tests:
+  - it: "should use the release namespace by default"
+    asserts:
+      - equal:
+          path: "metadata.namespace"
+          value: release-ns
+
+  - it: "should use namespaceOverride for every namespaced resource"
+    set:
+      namespaceOverride: other
+    asserts:
+      - equal:
+          path: "metadata.namespace"
+          value: other
+
+  - it: "should render a numeric release namespace as a string"
+    release:
+      namespace: "123"
+    asserts:
+      - equal:
+          path: "metadata.namespace"
+          value: "123"
+
+  - it: "should render a numeric namespaceOverride as a string"
+    set:
+      namespaceOverride: "123"
+    asserts:
+      - equal:
+          path: "metadata.namespace"
+          value: "123"
+---
+# gateway-protector cases
+suite: "Values contract: namespaceOverride references"
+templates:
+  - "templates/controller/rolebinding.yaml"
+  - "templates/controller/metrics_auth_rolebinding.yaml"
+  - "templates/controller/certs_rolebinding.yaml"
+  - "templates/controller/leader_election_rolebinding.yaml"
+  - "templates/controller/pdb.yaml"
+  - "templates/processor/pdb.yaml"
+  - "templates/processor/deployment.yaml"
+  - "templates/processor/backend-tls-policy.yaml"
+release:
+  name: rel
+  namespace: release-ns
+tests:
+  # The namespace references are the binding subjects, the config stream
+  # address of the processor, and the SNI of the processor backend.
+  - it: "should use namespaceOverride in the namespace references"
+    set:
+      namespaceOverride: other
+      controller:
+        podDisruptionBudget:
+          minAvailable: 1
+      processor:
+        podDisruptionBudget:
+          minAvailable: 1
+    asserts:
+      - equal:
+          path: "subjects[0].namespace"
+          value: other
+        template: "templates/controller/rolebinding.yaml"
+      - equal:
+          path: "subjects[0].namespace"
+          value: other
+        template: "templates/controller/metrics_auth_rolebinding.yaml"
+      - equal:
+          path: "subjects[0].namespace"
+          value: other
+        template: "templates/controller/certs_rolebinding.yaml"
+      - equal:
+          path: "subjects[0].namespace"
+          value: other
+        template: "templates/controller/leader_election_rolebinding.yaml"
+      - equal:
+          path: "metadata.namespace"
+          value: other
+        template: "templates/controller/pdb.yaml"
+      - equal:
+          path: "metadata.namespace"
+          value: other
+        template: "templates/processor/pdb.yaml"
+      - contains:
+          path: "spec.template.spec.containers[0].args"
+          content: "--config-server-address=gateway-protector-controller-config-stream.other.svc:9002"
+        template: "templates/processor/deployment.yaml"
+      - equal:
+          path: "spec.backend.tls.sni"
+          value: gateway-protector-processor.other.svc
+        template: "templates/processor/backend-tls-policy.yaml"
+
+  - it: "should render a numeric namespace as a string in the binding subjects"
+    release:
+      namespace: "123"
+    asserts:
+      - equal:
+          path: "subjects[0].namespace"
+          value: "123"
+        template: "templates/controller/rolebinding.yaml"
+      - equal:
+          path: "subjects[0].namespace"
+          value: "123"
+        template: "templates/controller/certs_rolebinding.yaml"
+---
+suite: "Values contract: namespaceOverride and the certificates"
+templates:
+  - "templates/certs.yaml"
+release:
+  name: rel
+  namespace: release-ns
+tests:
+  # On an upgrade, the chart reuses the certificates in the namespace of the
+  # workloads. With namespaceOverride, that is not the release namespace.
+  - it: "should look up the existing certificates in the namespaceOverride namespace"
+    set:
+      namespaceOverride: other
+    kubernetesProvider:
+      scheme:
+        "v1/Secret":
+          gvr:
+            version: v1
+            resource: secrets
+          namespaced: true
+      objects:
+        - apiVersion: v1
+          kind: Secret
+          metadata:
+            name: gateway-protector-controller-cert
+            namespace: other
+          data:
+            tls.crt: Y29udHJvbGxlci1jZXJ0
+            tls.key: Y29udHJvbGxlci1rZXk=
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: "metadata.namespace"
+          value: other
+      - isSubset:
+          path: data
+          content:
+            tls.crt: Y29udHJvbGxlci1jZXJ0
+            tls.key: Y29udHJvbGxlci1rZXk=
+
+  - it: "should not reuse the certificates of the release namespace when namespaceOverride is set"
+    set:
+      namespaceOverride: other
+    kubernetesProvider:
+      scheme:
+        "v1/Secret":
+          gvr:
+            version: v1
+            resource: secrets
+          namespaced: true
+      objects:
+        - apiVersion: v1
+          kind: Secret
+          metadata:
+            name: gateway-protector-controller-cert
+            namespace: release-ns
+          data:
+            tls.crt: Y29udHJvbGxlci1jZXJ0
+            tls.key: Y29udHJvbGxlci1rZXk=
+    documentIndex: 1
+    asserts:
+      - notEqual:
+          path: "data[\"tls.crt\"]"
+          value: Y29udHJvbGxlci1jZXJ0
