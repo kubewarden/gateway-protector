@@ -11,47 +11,69 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	gwpv1alpha1 "github.com/kubewarden/gateway-protector/api/v1alpha1"
+	procconfig "github.com/kubewarden/gateway-protector/internal/processor/config"
 )
 
 // alwaysCompiles is a DryCompiler that never fails, for tests that don't
 // care about the compile-failure path.
 func alwaysCompiles(string, string) error { return nil }
 
-func TestBuildCoversRouteAndSetsRouteCount(t *testing.T) {
-	policy := newPolicy("gw-default", gatewayTargetRef("infra", "shared-gw", nil))
-	policy.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeBlocking
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "team-shop"},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: "shared-gw", Namespace: new(gatewayv1.Namespace("infra"))},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"shop.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{Matches: []gatewayv1.HTTPRouteMatch{{Path: &gatewayv1.HTTPPathMatch{Value: new("/")}}}},
-			},
-		},
+// findBinding returns the binding for the whole kind/namespace/name
+// object, or nil.
+func findBinding(cfg *procconfig.Config, kind, namespace, name string) *procconfig.Binding {
+	for i := range cfg.Bindings {
+		b := &cfg.Bindings[i]
+		if b.Kind == kind && b.Namespace == namespace && b.Name == name && b.SectionName == "" {
+			return b
+		}
 	}
 
+	return nil
+}
+
+func TestBuildPublishesOneBindingPerPolicy(t *testing.T) {
+	gatewayDefault := newPolicy("gw-default", gatewayTargetRef("infra", "shared-gw", nil))
+	gatewayDefault.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeBlocking
+
+	listener := newPolicy("gw-admin", gatewayTargetRef("infra", "shared-gw", new(gatewayv1.SectionName("admin"))))
+	listener.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeDetection
+
+	route := newPolicy("route", httpRouteTargetRef("shop", nil))
+	route.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeBlocking
+	route.Spec.ParanoiaLevel = 2
+
+	rule := newPolicy("rule", httpRouteTargetRef("shop", new(gatewayv1.SectionName("health"))))
+	rule.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeOff
+
 	result := Build(Input{
-		Policies:   []*gwpv1alpha1.WAFPolicy{policy},
-		HTTPRoutes: []*gatewayv1.HTTPRoute{route},
+		Policies: []*gwpv1alpha1.WAFPolicy{rule, route, listener, gatewayDefault},
 	}, alwaysCompiles)
 
-	require.Len(t, result.PolicyResults, 1)
-	require.NoError(t, result.PolicyResults[0].Err)
-	assert.Equal(t, 1, result.PolicyResults[0].RouteCount)
+	require.Len(t, result.PolicyResults, 4)
+	for _, policyResult := range result.PolicyResults {
+		require.NoError(t, policyResult.Err)
+	}
 
 	cfg := result.Config
-	require.Len(t, cfg.Routes, 1)
-	assert.Equal(t, "shop.example.com", cfg.Routes[0].Host)
-	assert.Equal(t, "/", cfg.Routes[0].PathPrefix)
-	require.NotNil(t, cfg.Routes[0].WAF)
-	assert.Len(t, cfg.Directives, 1)
-	assert.Contains(t, cfg.Directives, cfg.Routes[0].WAF.EngineKey)
+	assert.Equal(t, procconfig.SchemaVersion, cfg.SchemaVersion)
+
+	keys := func(policy *gwpv1alpha1.WAFPolicy) *procconfig.WAFRef {
+		return &procconfig.WAFRef{EngineKey: EngineKey(RenderDirectives(policy, nil))}
+	}
+
+	assert.Equal(t, []procconfig.Binding{
+		{Kind: "Gateway", Namespace: "infra", Name: "shared-gw", WAF: keys(gatewayDefault)},
+		{Kind: "Gateway", Namespace: "infra", Name: "shared-gw", SectionName: "admin", WAF: keys(listener)},
+		{Kind: "HTTPRoute", Namespace: "team-shop", Name: "shop", WAF: keys(route)},
+		{Kind: "HTTPRoute", Namespace: "team-shop", Name: "shop", SectionName: "health", WAF: keys(rule)},
+	}, cfg.Bindings, "one binding per policy, in canonical order")
+
+	assert.Len(t, cfg.Directives, 4)
+	for _, binding := range cfg.Bindings {
+		assert.Contains(t, cfg.Directives, binding.WAF.EngineKey)
+	}
+
+	require.NoError(t, procconfig.Validate(cfg))
 }
 
 func TestBuildDeduplicatesIdenticalEngines(t *testing.T) {
@@ -68,36 +90,50 @@ func TestBuildDeduplicatesIdenticalEngines(t *testing.T) {
 	require.NoError(t, result.PolicyResults[0].Err)
 	require.NoError(t, result.PolicyResults[1].Err)
 	assert.Len(t, result.Config.Directives, 1, "byte-identical directives from two policies should share one engine")
+	require.Len(t, result.Config.Bindings, 2)
+	assert.Equal(t, result.Config.Bindings[0].WAF, result.Config.Bindings[1].WAF)
 }
 
-func TestBuildExcludesPolicyThatFailsToCompile(t *testing.T) {
-	policy := newPolicy("broken", gatewayTargetRef("infra", "shared-gw", nil))
-	policy.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeBlocking
+// TestBuildFailedPolicyClaimsItsAttachmentPoint pins that a policy whose
+// directives fail to compile still gets a binding, but without an engine:
+// requests that resolve to it continue uninspected, instead of falling
+// back to a less specific policy (see procconfig.Snapshot.Resolve).
+func TestBuildFailedPolicyClaimsItsAttachmentPoint(t *testing.T) {
+	gatewayDefault := newPolicy("gw-default", gatewayTargetRef("infra", "shared-gw", nil))
+	gatewayDefault.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeBlocking
 
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "team-shop"},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: "shared-gw", Namespace: new(gatewayv1.Namespace("infra"))},
-				},
-			},
-			Rules: []gatewayv1.HTTPRouteRule{{}},
-		},
+	broken := newPolicy("broken", httpRouteTargetRef("shop", nil))
+	broken.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeDetection
+
+	brokenKey := EngineKey(RenderDirectives(broken, nil))
+	failingCompile := func(engineKey, _ string) error {
+		if engineKey == brokenKey {
+			return errors.New("boom")
+		}
+
+		return nil
 	}
 
-	failingCompile := func(string, string) error { return errors.New("boom") }
-
 	result := Build(Input{
-		Policies:   []*gwpv1alpha1.WAFPolicy{policy},
-		HTTPRoutes: []*gatewayv1.HTTPRoute{route},
+		Policies:   []*gwpv1alpha1.WAFPolicy{gatewayDefault, broken},
+		HTTPRoutes: []*gatewayv1.HTTPRoute{shopRoute([]gatewayv1.ParentReference{infraParentRef("shared-gw", nil)}, gatewayv1.HTTPRouteRule{})},
 	}, failingCompile)
 
-	require.Len(t, result.PolicyResults, 1)
-	require.Error(t, result.PolicyResults[0].Err)
-	assert.Equal(t, 0, result.PolicyResults[0].RouteCount)
-	assert.Empty(t, result.Config.Directives)
-	assert.Empty(t, result.Config.Routes, "a route covered only by a failing policy gets no entry at all")
+	require.Len(t, result.PolicyResults, 2)
+	require.NoError(t, result.PolicyResults[0].Err)
+	require.Error(t, result.PolicyResults[1].Err)
+	assert.Equal(t, 0, result.PolicyResults[0].RouteCount, "the route's own policy hides the gateway default")
+	assert.Equal(t, 0, result.PolicyResults[1].RouteCount)
+
+	cfg := result.Config
+	assert.NotContains(t, cfg.Directives, brokenKey)
+
+	binding := findBinding(cfg, "HTTPRoute", "team-shop", "shop")
+	require.NotNil(t, binding, "a policy that failed to compile must still claim its attachment point")
+	assert.Nil(t, binding.WAF)
+
+	assert.Empty(t, result.Wiring, "a route whose only reachable policy failed to compile must not be wired")
+	require.NoError(t, procconfig.Validate(cfg))
 }
 
 func TestBuildMissingRuleSetIsReportedAsError(t *testing.T) {
@@ -113,31 +149,19 @@ func TestBuildMissingRuleSetIsReportedAsError(t *testing.T) {
 	require.Len(t, result.PolicyResults, 1)
 	require.Error(t, result.PolicyResults[0].Err)
 	assert.Empty(t, result.Config.Directives)
+	require.Len(t, result.Config.Bindings, 1)
+	assert.Nil(t, result.Config.Bindings[0].WAF)
 }
 
-func TestBuildRouteOptOutStillGetsAnExplicitEntry(t *testing.T) {
+func TestBuildRouteOptOutGetsTheOffEngine(t *testing.T) {
 	gatewayDefault := newPolicy("gw-default", gatewayTargetRef("infra", "shared-gw", nil))
 	gatewayDefault.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeDetection
 
 	routeOptOut := newPolicy("route-off", httpRouteTargetRef("status-page", nil))
 	routeOptOut.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeOff
 
-	gw := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{Name: "status-page", Namespace: "team-shop"},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: "shared-gw", Namespace: new(gatewayv1.Namespace("infra"))},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"status.example.com"},
-			Rules:     []gatewayv1.HTTPRouteRule{{}},
-		},
-	}
-
 	result := Build(Input{
-		Policies:   []*gwpv1alpha1.WAFPolicy{gatewayDefault, routeOptOut},
-		HTTPRoutes: []*gatewayv1.HTTPRoute{gw},
+		Policies: []*gwpv1alpha1.WAFPolicy{gatewayDefault, routeOptOut},
 	}, alwaysCompiles)
 
 	require.Len(t, result.PolicyResults, 2)
@@ -145,29 +169,27 @@ func TestBuildRouteOptOutStillGetsAnExplicitEntry(t *testing.T) {
 	require.NoError(t, result.PolicyResults[1].Err)
 
 	cfg := result.Config
-	require.Len(t, cfg.Routes, 1)
-	assert.Equal(t, "status.example.com", cfg.Routes[0].Host)
-	assert.Equal(t, offEngineDirectives, cfg.Directives[cfg.Routes[0].WAF.EngineKey])
-
 	require.Len(t, cfg.Directives, 2, "the Detection default and the Off opt-out are different engines and must both be published")
 
-	for engineKey, directives := range cfg.Directives {
-		if engineKey == cfg.Routes[0].WAF.EngineKey {
-			continue
-		}
+	routeBinding := findBinding(cfg, "HTTPRoute", "team-shop", "status-page")
+	require.NotNil(t, routeBinding)
+	require.NotNil(t, routeBinding.WAF)
+	assert.Equal(t, offEngineDirectives, cfg.Directives[routeBinding.WAF.EngineKey])
 
-		assert.Contains(t, directives, "SecRuleEngine DetectionOnly", "the other engine must be the Gateway's Detection default")
-	}
+	gatewayBinding := findBinding(cfg, "Gateway", "infra", "shared-gw")
+	require.NotNil(t, gatewayBinding)
+	require.NotNil(t, gatewayBinding.WAF)
+	assert.Contains(t, cfg.Directives[gatewayBinding.WAF.EngineKey], "SecRuleEngine DetectionOnly")
 }
 
 // TestBuildRouteModeOverridesGatewayMode pins that a route-level policy's
 // engine.mode fully replaces the Gateway-level default's for that route -
 // in both directions (stricter-than-default and looser-than-default) -
-// since effectivePolicyForRule picks exactly one policy per rule with no
-// notion of "strictest wins" across attachment levels (see
+// since the processor picks exactly one binding per request with no notion
+// of "strictest wins" across attachment levels (see
 // docs/policy-attachment.md). The Gateway's own engine is still compiled
-// and published (it may cover other routes), it just isn't the one this
-// route's table entry points at.
+// and published (it may cover other routes), it just isn't the one a
+// request of this route resolves to.
 func TestBuildRouteModeOverridesGatewayMode(t *testing.T) {
 	tests := []struct {
 		name               string
@@ -197,22 +219,9 @@ func TestBuildRouteModeOverridesGatewayMode(t *testing.T) {
 			routeOverride := newPolicy("route-override", httpRouteTargetRef("shop", nil))
 			routeOverride.Spec.Engine.Mode = tt.routeMode
 
-			route := &gatewayv1.HTTPRoute{
-				ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "team-shop"},
-				Spec: gatewayv1.HTTPRouteSpec{
-					CommonRouteSpec: gatewayv1.CommonRouteSpec{
-						ParentRefs: []gatewayv1.ParentReference{
-							{Name: "shared-gw", Namespace: new(gatewayv1.Namespace("infra"))},
-						},
-					},
-					Hostnames: []gatewayv1.Hostname{"shop.example.com"},
-					Rules:     []gatewayv1.HTTPRouteRule{{}},
-				},
-			}
-
 			result := Build(Input{
 				Policies:   []*gwpv1alpha1.WAFPolicy{gatewayDefault, routeOverride},
-				HTTPRoutes: []*gatewayv1.HTTPRoute{route},
+				HTTPRoutes: []*gatewayv1.HTTPRoute{shopRoute([]gatewayv1.ParentReference{infraParentRef("shared-gw", nil)}, gatewayv1.HTTPRouteRule{})},
 			}, alwaysCompiles)
 
 			require.Len(t, result.PolicyResults, 2)
@@ -220,22 +229,19 @@ func TestBuildRouteModeOverridesGatewayMode(t *testing.T) {
 			require.NoError(t, result.PolicyResults[1].Err)
 
 			cfg := result.Config
-			require.Len(t, cfg.Routes, 1)
-			require.NotNil(t, cfg.Routes[0].WAF)
 			require.Len(t, cfg.Directives, 2, "the gateway default and the route override are different engines and must both be published")
 
-			routeEngineKey := cfg.Routes[0].WAF.EngineKey
-			assert.Contains(t, cfg.Directives[routeEngineKey], tt.wantRouteDirective,
-				"the route's table entry must point at the route policy's engine, not the gateway's")
+			routeBinding := findBinding(cfg, "HTTPRoute", "team-shop", "shop")
+			require.NotNil(t, routeBinding)
+			require.NotNil(t, routeBinding.WAF)
+			assert.Contains(t, cfg.Directives[routeBinding.WAF.EngineKey], tt.wantRouteDirective,
+				"the route's binding must point at the route policy's engine, not the gateway's")
 
-			for engineKey, directives := range cfg.Directives {
-				if engineKey == routeEngineKey {
-					continue
-				}
-
-				assert.NotContains(t, directives, tt.wantRouteDirective,
-					"the gateway's own engine must remain unaffected by the route override")
-			}
+			gatewayBinding := findBinding(cfg, "Gateway", "infra", "shared-gw")
+			require.NotNil(t, gatewayBinding)
+			require.NotNil(t, gatewayBinding.WAF)
+			assert.NotContains(t, cfg.Directives[gatewayBinding.WAF.EngineKey], tt.wantRouteDirective,
+				"the gateway's own engine must remain unaffected by the route override")
 		})
 	}
 }
@@ -252,6 +258,58 @@ func TestBuildAcceptedPolicyWithNoCoverageStillCompiles(t *testing.T) {
 	require.NoError(t, result.PolicyResults[0].Err)
 	assert.Equal(t, 0, result.PolicyResults[0].RouteCount)
 	assert.Len(t, result.Config.Directives, 1, "the engine should still be compiled and published even with zero routes")
+	assert.Len(t, result.Config.Bindings, 1)
+}
+
+// TestBuildRouteCountCountsReachableRoutes pins RouteCount's meaning: the
+// number of wired HTTPRoutes a policy can apply to. A gateway default is
+// not counted for a route whose own policy hides it.
+func TestBuildRouteCountCountsReachableRoutes(t *testing.T) {
+	gatewayDefault := newPolicy("gw-default", gatewayTargetRef("infra", "shared-gw", nil))
+	gatewayDefault.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeBlocking
+
+	routeOverride := newPolicy("route-override", httpRouteTargetRef("covered", nil))
+	routeOverride.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeDetection
+
+	newRoute := func(name string) *gatewayv1.HTTPRoute {
+		route := shopRoute([]gatewayv1.ParentReference{infraParentRef("shared-gw", nil)}, gatewayv1.HTTPRouteRule{})
+		route.Name = name
+
+		return route
+	}
+
+	result := Build(Input{
+		Policies:   []*gwpv1alpha1.WAFPolicy{gatewayDefault, routeOverride},
+		HTTPRoutes: []*gatewayv1.HTTPRoute{newRoute("a"), newRoute("b"), newRoute("covered")},
+	}, alwaysCompiles)
+
+	require.Len(t, result.PolicyResults, 2)
+	assert.Equal(t, 2, result.PolicyResults[0].RouteCount)
+	assert.Equal(t, 1, result.PolicyResults[1].RouteCount)
+	assert.Len(t, result.Wiring, 3)
+}
+
+// TestBuildConfigDoesNotDependOnHTTPRoutes pins that HTTPRoutes only
+// decide the wiring: the published config, and so its hash, stays the same
+// when routes come and go.
+func TestBuildConfigDoesNotDependOnHTTPRoutes(t *testing.T) {
+	policy := newPolicy("gw-default", gatewayTargetRef("infra", "shared-gw", nil))
+	policy.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeBlocking
+
+	withoutRoutes := Build(Input{Policies: []*gwpv1alpha1.WAFPolicy{policy}}, alwaysCompiles)
+	withRoutes := Build(Input{
+		Policies:   []*gwpv1alpha1.WAFPolicy{policy},
+		HTTPRoutes: []*gatewayv1.HTTPRoute{shopRoute([]gatewayv1.ParentReference{infraParentRef("shared-gw", nil)}, gatewayv1.HTTPRouteRule{})},
+	}, alwaysCompiles)
+
+	withoutJSON, err := json.Marshal(withoutRoutes.Config)
+	require.NoError(t, err)
+	withJSON, err := json.Marshal(withRoutes.Config)
+	require.NoError(t, err)
+
+	assert.Equal(t, string(withoutJSON), string(withJSON)) //nolint:testifylint // byte-exact equality: the published config's hash must not change
+	assert.Empty(t, withoutRoutes.Wiring)
+	assert.Len(t, withRoutes.Wiring, 1)
 }
 
 func TestCorazaDryCompile(t *testing.T) {
@@ -276,7 +334,6 @@ func TestBuildConfigIsDeterministic(t *testing.T) {
 			gwpv1alpha1.WAFEngineModeDetection,
 			gwpv1alpha1.WAFEngineModeOff,
 		}
-		hosts := []string{"a.example.com", "b.example.com", "c.example.com"}
 
 		policies := make([]*gwpv1alpha1.WAFPolicy, 3)
 		routes := make([]*gatewayv1.HTTPRoute, 3)
@@ -290,14 +347,9 @@ func TestBuildConfigIsDeterministic(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: gateways[i] + "-route", Namespace: "team-shop"},
 				Spec: gatewayv1.HTTPRouteSpec{
 					CommonRouteSpec: gatewayv1.CommonRouteSpec{
-						ParentRefs: []gatewayv1.ParentReference{
-							{Name: gatewayv1.ObjectName(gateways[i]), Namespace: new(gatewayv1.Namespace("infra"))},
-						},
+						ParentRefs: []gatewayv1.ParentReference{infraParentRef(gateways[i], nil)},
 					},
-					Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(hosts[i])},
-					Rules: []gatewayv1.HTTPRouteRule{
-						{Matches: []gatewayv1.HTTPRouteMatch{{Path: &gatewayv1.HTTPPathMatch{Value: new("/")}}}},
-					},
+					Rules: []gatewayv1.HTTPRouteRule{{}},
 				},
 			}
 		}
@@ -319,7 +371,7 @@ func TestBuildConfigIsDeterministic(t *testing.T) {
 	reversed := Build(newScenario([]int{2, 1, 0}), alwaysCompiles)
 	shuffled := Build(newScenario([]int{1, 2, 0}), alwaysCompiles)
 
-	require.Len(t, forward.Config.Routes, 3)
+	require.Len(t, forward.Config.Bindings, 3)
 
 	forwardJSON, err := json.Marshal(forward.Config)
 	require.NoError(t, err)

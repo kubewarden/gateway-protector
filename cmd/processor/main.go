@@ -1,6 +1,7 @@
 // Command processor runs the Envoy ext_proc gRPC service: a Coraza-based WAF
-// engine selected per request by host+path, wired to agentgateway via the
-// AgentgatewayPolicy the controller generates.
+// engine selected per request by the Gateway, listener, route, and rule that
+// agentgateway reports, wired to agentgateway via the AgentgatewayPolicy the
+// controller generates.
 package main
 
 import (
@@ -56,7 +57,7 @@ func parseFlags() Config {
 			"requires one on --grpc-bind-address.")
 	flag.StringVar(&cfg.ConfigServerAddress, "config-server-address", "",
 		"The controller's config stream gRPC address (host:port) this processor subscribes its data-plane "+
-			"config (engines + host/path routing table) from. Required.")
+			"config (engines + their bindings to Gateways and HTTPRoutes) from. Required.")
 	flag.StringVar(&cfg.SubscriberID, "subscriber-id", "", "Identifies this replica to the controller's config "+
 		"stream logs/metrics (e.g. this pod's name). Defaults to the hostname if unset.")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level: debug, info, warn, or error.")

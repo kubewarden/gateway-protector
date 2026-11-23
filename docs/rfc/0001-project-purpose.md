@@ -198,16 +198,16 @@ The project does not do these things:
 
 A policy has exactly one target. Four target shapes are possible:
 
-| Target                     | Scope                                       |
-| -------------------------- | ------------------------------------------- |
-| A `Gateway`                | Every route that attaches to this gateway.  |
-| A `Gateway` and a listener | Every route that attaches to this listener. |
-| An `HTTPRoute`             | Every rule of this route.                   |
-| An `HTTPRoute` and a rule  | This rule only.                             |
+| Target                     | Scope                                          |
+| -------------------------- | ---------------------------------------------- |
+| A `Gateway`                | Every request that this gateway accepts.       |
+| A `Gateway` and a listener | Every request that this listener accepts.      |
+| An `HTTPRoute`             | Every rule of this route.                      |
+| An `HTTPRoute` and a rule  | This rule only.                                |
 
 The most specific policy wins. It replaces every broader policy for the
 traffic that it covers. The project never merges two policies, and it uses no
-priorities. As a result, exactly one policy governs each route rule.
+priorities. As a result, exactly one policy governs each request.
 
 If no policy targets a `Gateway` or its routes, the WAF does not inspect the
 traffic.
@@ -350,20 +350,23 @@ turn the WAF off. The Ownership section gives the details.
 
 ### Selection order
 
-The controller finds the policy of each route rule in this order:
+agentgateway selects the route and the rule of each request with the full
+rules of the Gateway API. It then tells the processor the gateway, the
+listener, the route, and the rule of the request. The processor finds the
+policy of the request in this order:
 
 ```mermaid
 flowchart TD
-    start(["One HTTPRoute rule"]) --> l1{"Does a policy target<br/>this rule of the route?"}
+    start(["One request"]) --> l1{"Does a policy target<br/>the rule that agentgateway selected?"}
     l1 -->|"yes"| p1["Route rule policy"]
     l1 -->|"no"| l2{"Does a policy target<br/>the full route?"}
     l2 -->|"yes"| p2["Route policy"]
-    l2 -->|"no"| l3{"Does a policy target<br/>the listener of the gateway?"}
+    l2 -->|"no"| l3{"Does a policy target<br/>the listener that accepted the request?"}
     l3 -->|"yes"| p3["Listener policy"]
-    l3 -->|"no"| l4{"Does a policy target<br/>the full gateway?"}
+    l3 -->|"no"| l4{"Does a policy target<br/>the gateway that accepted the request?"}
     l4 -->|"yes"| p4["Gateway policy"]
-    l4 -->|"no"| none["No policy. The WAF does not inspect this rule."]
-    p1 --> out["This policy governs the rule.<br/>No other policy applies."]
+    l4 -->|"no"| none["No policy. The WAF does not inspect this request."]
+    p1 --> out["This policy governs the request.<br/>No other policy applies."]
     p2 --> out
     p3 --> out
     p4 --> out
@@ -584,7 +587,7 @@ and its DLP policy from the route.
 
 ## agentgateway
 
-gateway-protector works with one gateway, agentgateway. Two properties of
+gateway-protector works with one gateway, agentgateway. Three properties of
 agentgateway shape the design:
 
 - agentgateway can send the traffic of a route to an external service for
@@ -594,6 +597,10 @@ agentgateway shape the design:
 - agentgateway has a `failureMode` field for ext_proc. The default value is
   `FailClosed`: when the external service is unreachable, agentgateway blocks
   the request. The other value is `FailOpen`.
+- agentgateway has a `metadataContext` field for ext_proc. agentgateway
+  evaluates the CEL expressions in this field for each request, and sends the
+  results to the external service. The expressions can read the gateway, the
+  listener, the route, and the rule that agentgateway selected.
 
 Two components of the project are specific to agentgateway. The controller
 writes `AgentgatewayPolicy` objects, and the processor handles some protocol
@@ -640,7 +647,7 @@ flowchart LR
     end
 
     subgraph dp["Data plane"]
-        processor["Processor<br/>WAF engines<br/>table of hosts and paths"]
+        processor["Processor<br/>WAF engines<br/>bindings to policy targets"]
     end
 
     agw["agentgateway"]
@@ -692,7 +699,8 @@ The processor holds two things in memory:
 - It holds one WAF engine for each different block of directives. A WAF
   engine is one instance of the Coraza WAF. Coraza creates the engine when it
   compiles one block of directives.
-- It holds a table that maps a host and a path prefix to one engine.
+- It holds one binding for each policy. A binding connects the target of the
+  policy to one engine.
 
 The processor has no dependency on the Kubernetes API, and it needs no
 Kubernetes permissions. The processor image contains the CRS files. As a
@@ -787,6 +795,15 @@ spec:
         responseBodyMode: None
         requestTrailerMode: Skip
         responseTrailerMode: Skip
+      metadataContext:
+        gateway-protector.kubewarden.io:
+          gatewayNamespace: proxy.gateway.namespace
+          gatewayName: proxy.gateway.name
+          listenerName: proxy.listener.name
+          routeKind: default(proxy.route.kind, "")
+          routeNamespace: proxy.route.namespace
+          routeName: proxy.route.name
+          routeRule: default(proxy.route.rule, "")
 ```
 
 The object has these properties:
@@ -799,15 +816,27 @@ The object has these properties:
   body, the mode is `None`, and agentgateway does not send this body.
 - A route with a `mode: Off` policy also gets this object. The processor then
   applies an engine that has the rules off.
+- The `metadataContext` field holds CEL expressions. CEL is the Common
+  Expression Language. agentgateway evaluates the expressions for each
+  request, after it selects the route. It sends the results to the processor.
+  The results are the identity of the request: the gateway, the listener, the
+  route, and the rule.
+- The expressions read only the `proxy` variables. agentgateway sets these
+  variables from its own route selection, so a client cannot change them.
+- The `metadataContext` field is the same for each route. A change to a
+  policy does not change this object.
 
 ### Configuration of the processor
 
 The controller turns each valid policy into one block of directives. The
-configuration has two parts:
+configuration has three parts:
 
+- The `schemaVersion` part gives the version of the format. The processor
+  rejects a configuration with another version.
 - The `directives` part maps an engine key to a block of directives. The
   processor compiles each block into one Coraza engine instance.
-- The `routes` part maps a host and a path prefix to an engine key.
+- The `bindings` part has one binding for each valid policy. A binding gives
+  the target of the policy and an engine key.
 
 An engine key is the name of one Coraza engine in the configuration. The
 controller computes the key from the block of directives of the engine. The
@@ -817,7 +846,7 @@ the same hash.
 
 The engine key has two purposes:
 
-- It connects each entry of the `routes` part to one block of directives.
+- It connects each binding to one block of directives.
 - It lets two policies with the same directives share one engine. The design
   decision
   [Policies with the same directives share one engine](#policies-with-the-same-directives-share-one-engine)
@@ -827,6 +856,7 @@ The controller sends the configuration as JSON. This example uses YAML and
 shortens the directives:
 
 ```yaml
+schemaVersion: 2
 directives:
   9f2b6c0e4a1d7c35: |
     Include @coraza.conf-recommended
@@ -835,15 +865,18 @@ directives:
     Include @owasp_crs/*.conf
   0d4e8a7b3c2f1e69: |
     SecRuleEngine Off
-routes:
-  - host: shop.example.com
-    pathPrefix: /health
-    waf:
-      engineKey: 0d4e8a7b3c2f1e69
-  - host: shop.example.com
-    pathPrefix: /
+bindings:
+  - kind: Gateway
+    namespace: infra
+    name: shared-gw
     waf:
       engineKey: 9f2b6c0e4a1d7c35
+  - kind: HTTPRoute
+    namespace: team-shop
+    name: shop
+    sectionName: health
+    waf:
+      engineKey: 0d4e8a7b3c2f1e69
 ```
 
 In the example, `9f2b6c0e4a1d7c35` is the engine key of the engine with the
@@ -861,11 +894,16 @@ The directives in the example have these effects:
 
 The files with the `@` prefix are inside the processor container image.
 
-The processor matches the host of a request first. An exact host wins over a
-wildcard host such as `*.example.com`. A wildcard host wins over the catch-all
-host `*`. Then the longest path prefix wins. In the example, a request for
-`/health/live` uses the engine that has the rules off. Every other request for
-`shop.example.com` uses the engine with the CRS.
+The processor uses the identity of each request to find a binding, in the
+order of the section [Selection order](#selection-order). In the example,
+agentgateway sends a request for `/health/live` to the rule `health` of the
+route `shop`, so the processor uses the engine that has the rules off. Every
+other request that the gateway `shared-gw` accepts uses the engine with the
+CRS. A request for `/healthz-admin` also uses the engine with the CRS,
+because agentgateway sends it to another rule.
+
+The configuration has no hosts and no paths. As a result, a change to an
+`HTTPRoute` does not change the configuration.
 
 The controller writes the directives of one engine in this order:
 
@@ -885,8 +923,9 @@ A protected request follows these steps:
 2. agentgateway matches the request to an `HTTPRoute`.
 3. If a generated `AgentgatewayPolicy` targets this route, agentgateway opens
    an ext_proc stream to the processor.
-4. The processor selects one WAF engine by the host and the path of the
-   request.
+4. agentgateway sends the identity of the request: the gateway, the listener,
+   the route, and the rule. The processor selects one WAF engine by this
+   identity.
 5. The engine runs the rules on the request. If the policy inspects request
    bodies, the processor holds the body until the verdict.
 6. If a rule rejects the request, agentgateway returns a block response to the
@@ -902,9 +941,11 @@ sequenceDiagram
     participant App as Application
 
     Client->>AGW: HTTP request
-    AGW->>Proc: request headers
-    Proc->>Proc: select the engine by host and path
-    alt no engine for this host and path
+    AGW->>Proc: request headers and identity
+    Proc->>Proc: select the engine by the identity
+    alt no identity
+        Proc-->>AGW: block with status 500
+    else no policy for this identity
         Proc-->>AGW: continue without inspection
     else a rule rejects the headers
         Proc-->>AGW: block
@@ -967,11 +1008,14 @@ section describes a second layout, the sidecar.
 agentgateway decides whether a request goes to the processor. The processor
 decides which rules apply to the request. For the first decision, the
 controller writes one `AgentgatewayPolicy` for each protected route. For the
-second decision, the processor holds a table of hosts and paths that the
-controller builds.
+second decision, agentgateway tells the processor the route and the rule
+that it selected, and the processor finds the policy of this route and rule.
 
-agentgateway matches routes with its own route table. The table in the
-processor has no fixed limit on the number of applications.
+Only agentgateway matches requests to routes. The processor does not repeat
+this work with a smaller set of rules, so the two cannot disagree. Other WAF
+integrations work the same way: the proxy selects the configuration with its
+own router, and the WAF receives the result. The bindings in the processor
+have no fixed limit on the number of applications.
 
 ### Policies with the same directives share one engine
 
@@ -997,6 +1041,9 @@ Protection does not stop silently at any layer:
   failure mode, `FailClosed`.
 - When a Coraza engine returns an error, the processor answers with status
   `500`.
+- When a request reaches the processor without its identity, the processor
+  answers with status `500`. The processor cannot find the policy of the
+  request.
 - A replica without a configuration receives no traffic, because its readiness
   probe fails.
 - When a new configuration is not valid, the processor keeps the last good
@@ -1021,11 +1068,15 @@ admission controller.
 - If the rules of a policy do not compile, the policy gets the status
   `Programmed=False` with reason `CompileFailed`. The unresolved questions
   cover the traffic of its routes.
-- The table in the processor matches paths by prefix. The first version does
-  not support `RegularExpression` path matches.
-- An `HTTPRoute` can attach to more than one `Gateway`. In this case, the
-  first gateway in `spec.parentRefs` that has a policy gives the policy for
-  the route.
+- An `HTTPRoute` can attach to more than one `Gateway`. In this case, each
+  request gets the policy of the gateway that accepted it.
+- A listener policy applies to each request that the listener accepts. The
+  `parentRef` of the route does not have to name the listener.
+- A user-written `AgentgatewayPolicy` that sends traffic to the processor
+  without the `metadataContext` field gets status `500` for each request.
+- After an upgrade from the version that selected engines by host and path,
+  some requests can get status `500`. This happens until agentgateway reads
+  the generated objects that the new controller writes again.
 - The generated `AgentgatewayPolicy` targets the full route. If a policy
   covers only one rule, the traffic of the other rules goes through the
   processor without inspection.
@@ -1080,6 +1131,39 @@ Why should we **not** do this?
 This section describes the designs that we considered and dropped. If we do
 not do this project, a team that wants Coraza and the CRS on its gateway must
 build and operate these parts itself.
+
+## Select the engine by host and path in the processor
+
+In this design, the controller builds a table of hosts and path prefixes from
+the `HTTPRoute` objects. The processor then selects the engine with the host
+and the path of each request. The first version of the project used this
+design.
+
+We dropped this design because the processor repeats the route selection of
+agentgateway with a smaller set of rules:
+
+- A path prefix in the table is a plain string prefix. A Gateway API
+  `PathPrefix` matches full path segments only.
+- The table ignores the header, query parameter, and method matches of a
+  rule.
+- The table has no gateway and no listener.
+
+As a result, the two can disagree. A request then gets the policy of another
+rule or another gateway. This policy can have the mode `Off`.
+
+## Send a fixed engine key in each generated object
+
+In this design, the controller writes the engine key of the policy as a CEL
+string literal in the `metadataContext` field. A rule with a policy of its
+own needs one more generated object.
+
+We dropped this design for two reasons:
+
+- A change to a policy changes its engine key. The controller then writes
+  the generated objects again. Until agentgateway reads them, it sends a key
+  that the processor does not know.
+- A route with more than one `Gateway` still gets one key. The design cannot
+  give each gateway its own policy.
 
 ## Select traffic with the `conditional` list
 
@@ -1150,23 +1234,10 @@ We dropped this design for three reasons:
   can write an ext_proc policy for the `Gateway` with
   `strategy.inheritance: Override`. agentgateway then ignores the ext_proc
   policy of each route.
-- Can the generated `AgentgatewayPolicy` give the engine key to the processor?
-  agentgateway has a `metadataContext` field for ext_proc. This field holds
-  values that agentgateway sends to the external service with each request.
-  With the engine key in this field, the processor needs no table of hosts and
-  paths. This design can remove three limits of the current design: the
-  missing support for `RegularExpression` paths, the single policy for a route
-  with more than one `Gateway`, and the traffic that goes through the
-  processor without inspection. agentgateway v1.3.1 does not have this field
-  in its Kubernetes API.
 - Does a later version support CRS plugins? The rule order of the controller
   has no step for the files of a plugin.
 - How much latency does the processor add? How much latency does a sidecar
   remove?
-- Does a route with more than one `Gateway` parent need a different policy for
-  each parent?
-- How does the project protect a route rule that uses only
-  `RegularExpression` path matches?
 - What happens to the traffic of a route when the rules of its policy do not
   compile? The project can block this traffic, or it can let the traffic
   through without inspection.

@@ -76,8 +76,9 @@ The request flow starts when a client sends a request:
 1. agentgateway matches the request to an `HTTPRoute`.
 2. If a generated `AgentgatewayPolicy` targets this route, agentgateway opens
    an ext_proc stream to the processor.
-3. The processor selects one Coraza engine by the host and the path of the
-   request.
+3. agentgateway sends the identity of the request: the gateway, the listener,
+   the route, and the rule that it selected. The processor selects one Coraza
+   engine by this identity.
 4. The engine runs the rules, and the processor answers with a verdict.
 
 ## Where each task is in the code
@@ -87,7 +88,8 @@ Each path in this table is relative to the root of the repository.
 | Task                                                             | Code                                                                                                    | Detailed document                                  |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
 | Decide if a policy is valid, and write the `Accepted` condition  | `internal/controller/wafpolicy_controller.go`, `wafpolicy_conflicts.go`, `wafpolicy_target.go`          | [`wafpolicy-lifecycle.md`](wafpolicy-lifecycle.md) |
-| Find the policy of each route rule, and build the table of hosts | `internal/controller/processorconfig/table.go`                                                          | [`policy-attachment.md`](policy-attachment.md)     |
+| Find the routes that a policy can apply to                       | `internal/controller/processorconfig/attachment.go`                                                     | [`policy-attachment.md`](policy-attachment.md)     |
+| Find the policy of each request                                  | `internal/processor/config/snapshot.go`, `internal/processor/identity.go`                               | [`policy-attachment.md`](policy-attachment.md)     |
 | Turn one policy into SecLang directives                          | `internal/controller/processorconfig/directives.go`                                                     | [`wafpolicy-lifecycle.md`](wafpolicy-lifecycle.md) |
 | Build the configuration, and write the `Programmed` condition    | `internal/controller/processor_config_reconciler.go`, `internal/controller/processorconfig/build.go`    | [`wafpolicy-lifecycle.md`](wafpolicy-lifecycle.md) |
 | Write the `AgentgatewayPolicy` objects                           | `internal/controller/processor_config_wiring.go`, `internal/agentgatewayapi/`                           | [`wafpolicy-lifecycle.md`](wafpolicy-lifecycle.md) |
@@ -106,7 +108,7 @@ Each path in this table is relative to the root of the repository.
 | `internal/controller/`                          | The control loops, the server of the configuration stream, the certificate rotation. |
 | `internal/controller/processorconfig/`          | The logic that turns policies into a configuration. It has no Kubernetes client.     |
 | `internal/processor/`                           | The ext_proc server.                                                                 |
-| `internal/processor/config/`                    | The configuration of the processor: parse, compile, match, and subscribe.            |
+| `internal/processor/config/`                    | The configuration of the processor: parse, compile, resolve, and subscribe.          |
 | `internal/certs/`                               | Certificate creation, and TLS credentials that reload without a restart.             |
 | `internal/configstream/v1/`                     | Generated code for the configuration stream.                                         |
 | `internal/agentgatewayapi/`                     | A copy of the `AgentgatewayPolicy` types that the controller needs.                  |
@@ -137,11 +139,11 @@ linter, and the Tilt environment.
 - [`rfc/0001-project-purpose.md`](rfc/0001-project-purpose.md) describes the
   purpose of the project, the design, and the alternatives.
 - [`processor.md`](processor.md) describes the configuration of the processor,
-  the matching rules, and the flow of a request.
+  the engine selection, and the flow of a request.
 - [`wafpolicy-lifecycle.md`](wafpolicy-lifecycle.md) follows a `WAFPolicy`
   from its creation to its deletion.
 - [`policy-attachment.md`](policy-attachment.md) describes how a policy
-  selects traffic and how this selection becomes the table of hosts and paths.
+  selects traffic and how this selection reaches the processor.
 - [`agentgateway-extproc.md`](agentgateway-extproc.md) holds the research
   notes on the ext_proc support of agentgateway.
 - [`crds/`](crds/) holds the generated reference of the CRD fields.

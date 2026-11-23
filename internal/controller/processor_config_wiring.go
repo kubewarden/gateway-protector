@@ -17,6 +17,7 @@ import (
 
 	"github.com/kubewarden/gateway-protector/internal/agentgatewayapi"
 	"github.com/kubewarden/gateway-protector/internal/controller/processorconfig"
+	procconfig "github.com/kubewarden/gateway-protector/internal/processor/config"
 )
 
 // ProcessorServiceName is the name of the Service the chart deploys in
@@ -83,14 +84,41 @@ func bodyMode(needed bool) *agentgatewayapi.BodySendMode {
 	return new(agentgatewayapi.BodySendModeNone)
 }
 
+// wiringMetadataContext is the metadataContext of every generated
+// AgentgatewayPolicy: CEL expressions that agentgateway evaluates for each
+// request, after it has selected the listener and the route, to tell the
+// processor the identity of the request (see procconfig.Identity). The
+// processor selects the engine from this identity, so it never works out
+// the route of a request itself.
+//
+// The expressions read only proxy.* variables, which agentgateway fills
+// from its own routing decision, never from the client request. The route
+// kind and the rule name are optional in agentgateway (an unnamed rule has
+// no proxy.route.rule), so default() turns their absence into an empty
+// string; the processor requires every key to be present. The block is
+// the same for every route, so a WAFPolicy change never rewrites it.
+func wiringMetadataContext() map[string]agentgatewayapi.NamespacedMetadataContext {
+	return map[string]agentgatewayapi.NamespacedMetadataContext{
+		procconfig.MetadataNamespace: {
+			procconfig.MetadataKeyGatewayNamespace: "proxy.gateway.namespace",
+			procconfig.MetadataKeyGatewayName:      "proxy.gateway.name",
+			procconfig.MetadataKeyListenerName:     "proxy.listener.name",
+			procconfig.MetadataKeyRouteKind:        `default(proxy.route.kind, "")`,
+			procconfig.MetadataKeyRouteNamespace:   "proxy.route.namespace",
+			procconfig.MetadataKeyRouteName:        "proxy.route.name",
+			procconfig.MetadataKeyRouteRule:        `default(proxy.route.rule, "")`,
+		},
+	}
+}
+
 // desiredWiringPolicy renders the AgentgatewayPolicy that wires one
 // protected route's traffic through the processor: it lives in the
 // route's namespace (AgentgatewayPolicy targetRefs are namespace-local),
 // is owned by the route (deleting the route garbage-collects the wiring),
-// and targets the whole route - engine selection per rule stays the
-// processor's host+path table's job, so a route where only some rules are
-// covered still wires all of them; uncovered traffic simply finds no
-// table entry and continues unprotected.
+// and targets the whole route. The processor selects the engine per
+// request from the identity in wiringMetadataContext, so a route where
+// only some rules are covered still wires all of them; traffic that no
+// WAFPolicy covers finds no binding and continues unprotected.
 func desiredWiringPolicy(wiring processorconfig.RouteWiring, processorNamespace string) *agentgatewayapi.AgentgatewayPolicy {
 	route := wiring.Route
 
@@ -138,6 +166,7 @@ func desiredWiringPolicy(wiring processorconfig.RouteWiring, processorNamespace 
 							RequestTrailerMode:  new(agentgatewayapi.TrailerSendModeSkip),
 							ResponseTrailerMode: new(agentgatewayapi.TrailerSendModeSkip),
 						},
+						MetadataContext: wiringMetadataContext(),
 					},
 				},
 			},

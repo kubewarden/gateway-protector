@@ -69,13 +69,13 @@ func TestTransformStripGateway(t *testing.T) {
 	assert.Nil(t, stripped.Spec.Addresses, "addresses should be stripped")
 	assert.Nil(t, stripped.Spec.Infrastructure, "infrastructure should be stripped")
 
-	// The fields this controller actually reads must survive.
+	// The field this controller actually reads must survive.
 	require.Len(t, stripped.Spec.Listeners, 1)
 	listener := stripped.Spec.Listeners[0]
 	assert.Equal(t, listenerName, listener.Name)
-	assert.Equal(t, &hostname, listener.Hostname)
-	assert.Equal(t, gatewayv1.PortNumber(443), listener.Port)
-	assert.Equal(t, gatewayv1.HTTPSProtocolType, listener.Protocol)
+	assert.Nil(t, listener.Hostname, "listener hostname should be stripped")
+	assert.Zero(t, listener.Port, "listener port should be stripped")
+	assert.Empty(t, listener.Protocol, "listener protocol should be stripped")
 	assert.Nil(t, listener.TLS, "listener TLS should be stripped")
 	assert.Nil(t, listener.AllowedRoutes, "listener allowedRoutes should be stripped")
 }
@@ -144,15 +144,13 @@ func TestTransformStripHTTPRoute(t *testing.T) {
 	// The fields this controller actually reads must survive.
 	require.Len(t, stripped.Spec.ParentRefs, 1)
 	assert.Equal(t, gatewayv1.ObjectName("shared-gw"), stripped.Spec.ParentRefs[0].Name)
-	require.Len(t, stripped.Spec.Hostnames, 1)
-	assert.Equal(t, hostname, stripped.Spec.Hostnames[0])
+	assert.Nil(t, stripped.Spec.Hostnames, "hostnames should be stripped")
 
 	require.Len(t, stripped.Spec.Rules, 1)
 	rule := stripped.Spec.Rules[0]
 	require.NotNil(t, rule.Name)
 	assert.Equal(t, ruleName, *rule.Name)
-	require.Len(t, rule.Matches, 1)
-	assert.Equal(t, "/admin", *rule.Matches[0].Path.Value)
+	assert.Nil(t, rule.Matches, "matches should be stripped")
 	assert.Nil(t, rule.Filters, "filters should be stripped")
 	assert.Nil(t, rule.BackendRefs, "backendRefs should be stripped")
 	assert.Nil(t, rule.Timeouts, "timeouts should be stripped")

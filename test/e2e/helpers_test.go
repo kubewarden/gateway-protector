@@ -90,20 +90,47 @@ func deployHTTPBinBase(ctx context.Context, t *testing.T, cfg *envconf.Config, n
 	require.NoError(t, err, "agentgateway proxy Deployment %s/%s never became Available", ns, httpbinGatewayName)
 }
 
-// curlStatus execs into httpbin's curl sidecar (kept around exactly for
-// this purpose - see test/manifests/httpbin.yaml) and returns the HTTP
-// status code a request through the agentgateway-managed proxy Service in
-// ns gets back. An empty hostHeader uses the Service's own default Host
-// (<gatewayName>.<ns>); a non-empty one overrides it, for hitting a
+// curlRequest is one request that curlRequestStatus sends through an
+// agentgateway proxy in the test namespace.
+type curlRequest struct {
+	// gateway is the Gateway whose proxy Service receives the request.
+	// Empty means httpbinGatewayName.
+	gateway string
+
+	// host overrides the Host header. Empty keeps the Service's own
+	// default Host (<gateway>.<ns>).
+	host string
+
+	path string
+
+	// headers are extra request headers, each in curl's "Name: value"
+	// form.
+	headers []string
+}
+
+// curlRequestStatus execs into httpbin's curl sidecar (kept around exactly
+// for this purpose - see test/manifests/httpbin.yaml) and returns the HTTP
+// status code req gets back through the agentgateway-managed proxy Service
+// of req.gateway in ns. An empty req.host uses the Service's own default
+// Host (<gateway>.<ns>); a non-empty one overrides it, for hitting a
 // non-catch-all HTTPRoute matched by hostname rather than by Service DNS
 // name.
-func curlStatus(ctx context.Context, cfg *envconf.Config, ns, hostHeader, path string) (string, error) {
+func curlRequestStatus(ctx context.Context, cfg *envconf.Config, ns string, req curlRequest) (string, error) {
 	var stdout, stderr bytes.Buffer
 
-	url := fmt.Sprintf("http://%s.%s/%s", httpbinGatewayName, ns, strings.TrimPrefix(path, "/"))
+	gateway := req.gateway
+	if gateway == "" {
+		gateway = httpbinGatewayName
+	}
+
+	url := fmt.Sprintf("http://%s.%s/%s", gateway, ns, strings.TrimPrefix(req.path, "/"))
 	cmd := []string{"curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", url}
-	if hostHeader != "" {
-		cmd = append(cmd, "-H", "Host: "+hostHeader)
+	if req.host != "" {
+		cmd = append(cmd, "-H", "Host: "+req.host)
+	}
+
+	for _, header := range req.headers {
+		cmd = append(cmd, "-H", header)
 	}
 
 	err := cfg.Client().Resources().ExecInDeployment(ctx, ns, httpbinDeploymentName, cmd, &stdout, &stderr,
@@ -115,7 +142,7 @@ func curlStatus(ctx context.Context, cfg *envconf.Config, ns, hostHeader, path s
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// curlPost is curlStatus's POST-with-body counterpart: it execs into
+// curlPost is curlRequestStatus's POST-with-body counterpart: it execs into
 // httpbin's curl sidecar and returns both the HTTP status code and the
 // full response body, for tests that need to inspect what came back (e.g.
 // to verify the request/response body itself wasn't mangled in transit -
@@ -148,13 +175,23 @@ func curlPost(ctx context.Context, cfg *envconf.Config, ns, path, contentType, b
 	return strings.TrimSpace(statusLine), respBody, nil
 }
 
-// waitForStatus polls curlStatus until it returns want or timeout elapses.
+// waitForStatus polls curlRequestStatus, for a request with the given
+// Host header and path through httpbinGatewayName, until it returns want
+// or timeout elapses.
 func waitForStatus(ctx context.Context, t *testing.T, cfg *envconf.Config, ns, hostHeader, path, want string, timeout time.Duration) {
+	t.Helper()
+
+	waitForRequestStatus(ctx, t, cfg, ns, curlRequest{host: hostHeader, path: path}, want, timeout)
+}
+
+// waitForRequestStatus polls curlRequestStatus until it returns want or
+// timeout elapses.
+func waitForRequestStatus(ctx context.Context, t *testing.T, cfg *envconf.Config, ns string, req curlRequest, want string, timeout time.Duration) {
 	t.Helper()
 
 	var last string
 	err := wait.For(func(ctx context.Context) (bool, error) {
-		status, err := curlStatus(ctx, cfg, ns, hostHeader, path)
+		status, err := curlRequestStatus(ctx, cfg, ns, req)
 		if err != nil {
 			// The gateway/pod may not be reachable yet right after
 			// creation - keep polling instead of failing fast.
@@ -165,7 +202,8 @@ func waitForStatus(ctx context.Context, t *testing.T, cfg *envconf.Config, ns, h
 
 		return status == want, nil
 	}, wait.WithTimeout(timeout), wait.WithInterval(5*time.Second), wait.WithContext(ctx))
-	require.NoError(t, err, "timed out waiting for %s (Host: %q) to return %s (last status observed: %q)", path, hostHeader, want, last)
+	require.NoError(t, err, "timed out waiting for %s (Gateway: %q, Host: %q, headers: %q) to return %s (last status observed: %q)",
+		req.path, req.gateway, req.host, req.headers, want, last)
 }
 
 // waitForPostBodyEcho POSTs body (as contentType) to path repeatedly until

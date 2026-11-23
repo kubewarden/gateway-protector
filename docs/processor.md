@@ -35,59 +35,95 @@ listener once `--ext-proc-cert-dir` requires one there - see
 ## Configuration
 
 The config (see `internal/processor/config/types.go` for the authoritative Go types, and
-[Config stream](#config-stream) for how it's delivered) is canonical JSON with two top-level keys.
+[Config stream](#config-stream) for how it's delivered) is canonical JSON with three top-level keys.
 The example below uses YAML purely for readability in this document; the wire format is JSON, not
 YAML:
 
 ```yaml
+# schemaVersion is the version of this format. The processor rejects a config of any other
+# version (see "Config stream" below for the version handshake). Version 1, which had no
+# schemaVersion key, selected engines with a table of hosts and path prefixes.
+schemaVersion: 2
+
 # directives maps an opaque "engine key" to a block of raw Coraza/SecLang directives. Each entry is
 # compiled into its own coraza.WAF engine, keyed by that string. Identical rendered directive blocks
 # are expected to share the same engine key (e.g. a hash of the rendered directives) so that engines
-# get deduplicated in memory instead of compiling one per policy/route that happens to use the exact
+# get deduplicated in memory instead of compiling one per policy that happens to use the exact
 # same rules.
 directives:
   <engineKey>: <secLangDirectives>
 
-# routes maps host+pathPrefix pairs to the engine that protects them.
-routes:
-  - host: <host>            # matched against :authority/Host - an exact hostname, "*.<suffix>"
-                             # (any strict subdomain of suffix), or "*" (any host) - see "Matching
-                             # semantics" below
-    pathPrefix: <pathPrefix> # matched against :path
+# bindings attaches engines to Gateway API attachment points - one per Accepted WAFPolicy, at the
+# object (and optional section) its spec.targetRef names. At most one binding per attachment point.
+bindings:
+  - kind: <Gateway|HTTPRoute>
+    namespace: <namespace>
+    name: <name>
+    sectionName: <listener or rule name> # optional; omitted means the whole Gateway/HTTPRoute
     waf:
-      engineKey: <engineKey> # must exist in `directives`; omit `waf` entirely for a route with no engine attached
+      engineKey: <engineKey> # must exist in `directives`; `waf` is omitted for a policy whose
+                             # directives failed to compile - see "Engine selection" below
 ```
 
-### Matching semantics
+The config has no hosts or paths. agentgateway selects the route of each request with the full
+Gateway API matching rules (hostnames, path matches on segment boundaries, header, query parameter,
+and method matches, the Gateway and the listener), and reports the result to the processor. The
+processor only maps that result to an engine.
 
-For each request, the processor resolves the WAF engine as follows (see
-`internal/processor/config/snapshot.go`). This is the *request-time* half of
-matching; see `docs/policy-attachment.md` for how the controller decides
-which `WAFPolicy` governs a route in the first place, and how that becomes
-the `host`/`pathPrefix` entries matched below:
+### Request identity
 
-1. **Host** — tried in this order, each fully exhausted before falling through to the next:
-   1. an exact match against `:authority`/`Host`;
-   2. the same host with any `:port` suffix stripped, still matched exactly (an IPv6 literal like
-      `[::1]:8443` is handled correctly: only the port after the closing `]` is stripped);
-   3. a wildcard route (`host: "*.example.com"`), matched against the host and then the
-      port-stripped host - it matches any strict subdomain of the suffix (`shop.example.com`) but
-      **not** the bare suffix itself (`example.com`); when more than one wildcard route matches,
-      the most specific (longest) suffix wins (`*.internal.example.com` over `*.example.com`);
-   4. a catch-all route (`host: "*"`), matching any host at all.
-2. **Path** — among the routes for the matched host (whichever step above matched), the **longest
-   matching `pathPrefix`** wins, so a more specific route (e.g. `/health`) can override a broader
-   one (e.g. `/`) for the same host.
-3. **No match at all** — the request is **not blocked**; it continues unprotected. This is
-   intentional: classification (which requests get inspected) is meant to live in the gateway's
-   native route table (via policy attachment), not be re-derived here from an ever-growing host
-   inventory. The processor's routing table exists purely to pick *which* engine applies once the
-   gateway has already decided a request should be sent through `ext_proc` at all. A route with no
-   matching host at all (not even a catch-all) is how the controller expresses that: it simply
-   doesn't emit an entry.
-4. **Route matches but has no `waf` key** — distinct from "no route matched": the route is
-   recognized, but no engine runs. This is reserved for a future DLP-only route (once DLP exists as
-   its own response-phase engine, independent of the WAF request-phase engine).
+Every `AgentgatewayPolicy` the controller generates sets `traffic.extProc.metadataContext` (see
+`wiringMetadataContext` in `internal/controller/processor_config_wiring.go`). agentgateway evaluates
+these CEL expressions for each request, after it has selected the listener and the route, and sends
+the results in `ProcessingRequest.metadata_context.filter_metadata`, under the namespace
+`gateway-protector.kubewarden.io`:
+
+| Key | CEL expression | Value |
+| --- | --- | --- |
+| `gatewayNamespace` | `proxy.gateway.namespace` | Namespace of the Gateway that accepted the request |
+| `gatewayName` | `proxy.gateway.name` | Name of that Gateway |
+| `listenerName` | `proxy.listener.name` | Name of the listener that accepted the request |
+| `routeKind` | `default(proxy.route.kind, "")` | Kind of the selected route, e.g. `HTTPRoute` |
+| `routeNamespace` | `proxy.route.namespace` | Namespace of the selected route |
+| `routeName` | `proxy.route.name` | Name of the selected route |
+| `routeRule` | `default(proxy.route.rule, "")` | Name of the selected rule, or `""` for a rule without a name |
+
+The expressions read only `proxy.*` variables, which agentgateway fills from its own routing
+decision - a client cannot set them with a header. The processor reads them in the request headers
+phase (`identityFromMetadata` in `internal/processor/identity.go`).
+
+### Engine selection
+
+For each request, the processor resolves the WAF engine from that identity as follows (see
+`Snapshot.Resolve` in `internal/processor/config/snapshot.go`). This is the *request-time* half of
+policy attachment; see `docs/policy-attachment.md` for the user-facing rules. It tries these
+attachment points, most specific first, and stops at the first one that has a binding:
+
+1. the `HTTPRoute` rule (`kind: HTTPRoute`, `sectionName: <routeRule>`) - only when the rule has a
+   name;
+2. the whole `HTTPRoute` (`kind: HTTPRoute`, no `sectionName`);
+3. the Gateway listener (`kind: Gateway`, `sectionName: <listenerName>`);
+4. the whole Gateway (`kind: Gateway`, no `sectionName`).
+
+Levels 1 and 2 apply only when `routeKind` is `HTTPRoute`.
+
+- **A binding with an engine** — the processor inspects the request with that engine.
+- **A binding without `waf`** — the policy at that attachment point failed to compile
+  (`Programmed=False`, reason `CompileFailed`). No engine runs and the request continues
+  uninspected. The processor does **not** fall back to a less specific binding: a broken policy
+  never silently hands its traffic to another policy.
+- **No binding at all** — no `WAFPolicy` covers the request, and it continues uninspected. This
+  happens, for example, for a rule without a policy on a route where only other rules have one:
+  the generated wiring targets the whole route.
+
+### Requests without an identity fail closed
+
+A request whose metadata lacks the `gateway-protector.kubewarden.io` namespace, or one of its seven
+keys, or holds a key that is not a string, or has an empty Gateway or route namespace or name, is
+answered with a plain `500` `ImmediateResponse`. The processor cannot tell which policy applies to
+such a request, so it refuses it instead of letting it through uninspected. This happens when a
+user-written `AgentgatewayPolicy` sends traffic to the processor without the metadata, or when
+agentgateway fails to evaluate one of the expressions.
 
 ### Body inspection
 
@@ -114,6 +150,8 @@ Again shown as YAML for readability (comments); the actual wire format is JSON (
 [Config stream](#config-stream)):
 
 ```yaml
+schemaVersion: 2
+
 directives:
   shop-strict: |
     Include @coraza.conf-recommended
@@ -122,21 +160,26 @@ directives:
   off: |
     SecRuleEngine Off
 
-routes:
-  # /health on shop.example.com is explicitly exempted from the WAF (longest-prefix wins over the
-  # broader "/" route below).
-  - host: shop.example.com
-    pathPrefix: /health
-    waf:
-      engineKey: off
-  - host: shop.example.com
-    pathPrefix: /
+bindings:
+  # The default for every request that the shared-gw Gateway accepts.
+  - kind: Gateway
+    namespace: infra
+    name: shared-gw
     waf:
       engineKey: shop-strict
-  # blog.example.com is recognized (so a future DLP-only config could attach to it) but currently
-  # has no WAF engine at all - equivalent to unprotected, but explicit about it.
-  - host: blog.example.com
-    pathPrefix: /
+  # The "health" rule of the shop HTTPRoute is exempted from the WAF. Requests that agentgateway
+  # sends to the other rules of the route still resolve to the Gateway binding above.
+  - kind: HTTPRoute
+    namespace: team-shop
+    name: shop
+    sectionName: health
+    waf:
+      engineKey: off
+  # The policy of the blog HTTPRoute failed to compile: its requests continue uninspected, and do
+  # not fall back to the Gateway binding.
+  - kind: HTTPRoute
+    namespace: team-blog
+    name: blog
 ```
 
 The Core Rule Set shown above (`@coraza.conf-recommended`, `@crs-setup.conf.example`,
@@ -148,9 +191,10 @@ attribute on the "Processor ready" log line).
 ## Request-time flow
 
 1. **Request headers phase** — the processor extracts `:authority`, `:method`, `:path` (and, for
-   logging, `:scheme`), resolves the WAF engine via the routing table above, and if one is attached,
-   starts a Coraza transaction (`ProcessURI` + per-header `AddRequestHeader` + `ProcessRequestHeaders`).
-   An interruption here blocks immediately.
+   logging, `:scheme`), reads the [request identity](#request-identity) from the ext_proc metadata,
+   resolves the WAF engine from it (see [Engine selection](#engine-selection)), and if one is
+   attached, starts a Coraza transaction (`ProcessURI` + per-header `AddRequestHeader` +
+   `ProcessRequestHeaders`). An interruption here blocks immediately.
 2. **Request body phase** — body chunks are fed into the transaction (`WriteRequestBody`) and, when
    Coraza is going to inspect the body (`SecRequestBodyAccess On`), **withheld from the upstream**
    until the phase-2 verdict (`ProcessRequestBody` at end-of-stream): a blocked request's body never
@@ -290,7 +334,7 @@ file:line evidence.
 
 ## Config stream
 
-The processor receives its data-plane config (engines + routing table) from the controller over a
+The processor receives its data-plane config (engines + bindings) from the controller over a
 long-lived gRPC stream (`proto/configstream/v1/config_stream.proto`,
 `internal/processor/config.Subscriber`), not from a file: the processor dials the controller's
 `ConfigServer` (`internal/controller.ConfigServer`) once at startup and keeps that single stream open
@@ -303,9 +347,17 @@ for its whole lifetime, reconnecting with backoff on any error.
   sides already share the same Go schema and parse/validate/compile pipeline; encoding it as opaque
   bytes avoids a redundant proto-message duplicate of that schema. Each push also carries a sha256
   hex digest of those bytes as its `version`, letting both sides skip no-op pushes/reloads - stable
-  across reconciles because `processorconfig.Build` documents its `Routes` ordering as canonical
+  across reconciles because `processorconfig.Build` documents its `Bindings` ordering as canonical
   (sorted, not the cache's arbitrary iteration order) and `encoding/json.Marshal` is itself
-  deterministic (sorted map keys, declaration-order struct fields).
+  deterministic (sorted map keys, declaration-order struct fields). The config depends only on
+  `WAFPolicy` and `WAFRuleSet` objects: an `HTTPRoute` change never changes it.
+- **Schema version handshake**: the processor announces the config schema version it accepts
+  (`Subscribe.schema_version`, `internal/processor/config.SchemaVersion`). The controller ends the
+  stream of a processor with another version with `FAILED_PRECONDITION` and sends it no config.
+  During a rolling upgrade, a processor of the previous version therefore keeps serving the config
+  it already has, instead of reading the new format as an empty table and letting every request
+  through; a processor of the new version rejects the config of a previous controller (it has no
+  `schemaVersion`) and stays not ready until a new controller serves it.
 - After receiving a config, the processor parses, validates, and compiles it, then sends a
   `ConfigAck` back reporting whether it applied successfully - the controller knows whether a given
   replica is actually running the config it was sent (see `ConfigServer`'s ack logging).

@@ -86,8 +86,14 @@ const (
 
 	// engineKey is the key the e2e directive block is compiled under in
 	// the processor's Snapshot. Its value is arbitrary: it only links
-	// the catch-all route to the engine.
+	// the binding to the engine.
 	engineKey = "coraza-e2e"
+
+	// gatewayIdentity is the namespace and name of the Gateway that
+	// agentgateway reports for every request (see the metadataContext in
+	// agentgatewayConfigTemplate), and that the processor's config binds
+	// to the engine.
+	gatewayIdentity = "coraza-e2e"
 )
 
 // agentgatewayConfigTemplate is agentgateway's standalone ("-f
@@ -97,8 +103,11 @@ const (
 // the controller renders into the generated AgentgatewayPolicy in
 // production (internal/controller.desiredWiringPolicy), with both body
 // phases enabled since e2e.Directives inspects request and response
-// bodies. The two %s verbs are the ext_proc host:port and the httpbin
-// host:port.
+// bodies. The metadataContext has the keys of the production one, but
+// with literal values instead of agentgateway's proxy.* variables: a
+// standalone agentgateway has no Kubernetes Gateway or HTTPRoute to
+// report, and the processor fails closed without these keys. The two %s
+// verbs are the ext_proc host:port and the httpbin host:port.
 const agentgatewayConfigTemplate = `binds:
 - port: ` + gatewayPort + `
   listeners:
@@ -116,23 +125,34 @@ const agentgatewayConfigTemplate = `binds:
             responseBodyMode: fullDuplexStreamed
             requestTrailerMode: skip
             responseTrailerMode: skip
+          metadataContext:
+            gateway-protector.kubewarden.io:
+              gatewayNamespace: "'coraza-e2e'"
+              gatewayName: "'coraza-e2e'"
+              listenerName: "'http'"
+              routeKind: "''"
+              routeNamespace: "'coraza-e2e'"
+              routeName: "'coraza-e2e'"
+              routeRule: "''"
       backends:
       - host: %s
 `
 
 // startProcessor compiles Coraza's e2e directive block into a Snapshot
-// with a single catch-all route and serves the ext_proc gRPC service on an
+// with a single binding and serves the ext_proc gRPC service on an
 // ephemeral loopback port, returning that port. The server is shut down
 // via t.Cleanup.
 func startProcessor(t *testing.T, logger *slog.Logger) int {
 	t.Helper()
 
 	cfg := &config.Config{
-		Directives: map[string]string{engineKey: coraza_e2e.Directives},
-		Routes: []config.Route{{
-			Host:       "*",
-			PathPrefix: "/",
-			WAF:        &config.WAFRef{EngineKey: engineKey},
+		SchemaVersion: config.SchemaVersion,
+		Directives:    map[string]string{engineKey: coraza_e2e.Directives},
+		Bindings: []config.Binding{{
+			Kind:      config.KindGateway,
+			Namespace: gatewayIdentity,
+			Name:      gatewayIdentity,
+			WAF:       &config.WAFRef{EngineKey: engineKey},
 		}},
 	}
 	require.NoError(t, config.Validate(cfg))

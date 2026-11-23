@@ -27,15 +27,16 @@ func publishedConfig() *procconfig.Config {
 	return publishedConfigs.lastConfig()
 }
 
-// findRoute returns the first route in cfg matching host+pathPrefix
-// exactly, so tests can assert on their own policy's contribution to the
+// findBinding returns the binding in cfg for the whole kind/namespace/name
+// object, so tests can assert on their own policy's contribution to the
 // processor config without being sensitive to what other, unrelated
 // WAFPolicy objects (from other specs, running against the same shared
 // manager/published config) may currently also be contributing.
-func findRoute(cfg *procconfig.Config, host, pathPrefix string) *procconfig.Route {
-	for i := range cfg.Routes {
-		if cfg.Routes[i].Host == host && cfg.Routes[i].PathPrefix == pathPrefix {
-			return &cfg.Routes[i]
+func findBinding(cfg *procconfig.Config, kind, namespace, name string) *procconfig.Binding {
+	for i := range cfg.Bindings {
+		binding := &cfg.Bindings[i]
+		if binding.Kind == kind && binding.Namespace == namespace && binding.Name == name && binding.SectionName == "" {
+			return binding
 		}
 	}
 
@@ -82,7 +83,7 @@ var _ = Describe("ProcessorConfigReconciler", func() {
 			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, policy)).To(Succeed()) })
 		})
 
-		It("publishes an engine and route entry, and sets Programmed=True/Programmed", func() {
+		It("publishes an engine and a binding, and sets Programmed=True/Programmed", func() {
 			Eventually(acceptedStatus(ctx, key)).Should(Equal(metav1.ConditionTrue))
 
 			Eventually(func() (*metav1.Condition, error) {
@@ -98,17 +99,17 @@ var _ = Describe("ProcessorConfigReconciler", func() {
 				HaveField("Reason", gwpv1alpha1.ConditionReasonProgrammed),
 			))
 
-			var route *procconfig.Route
-			Eventually(func() *procconfig.Route {
-				route = findRoute(publishedConfig(), "procconfig.example.com", "/")
-				return route
+			var binding *procconfig.Binding
+			Eventually(func() *procconfig.Binding {
+				binding = findBinding(publishedConfig(), procconfig.KindGateway, "default", gatewayName)
+				return binding
 			}).ShouldNot(BeNil())
 
-			Expect(route.WAF).NotTo(BeNil())
+			Expect(binding.WAF).NotTo(BeNil())
 
 			cfg := publishedConfig()
-			directives, found := cfg.Directives[route.WAF.EngineKey]
-			Expect(found).To(BeTrue(), "the route's engine key must have a matching directives entry")
+			directives, found := cfg.Directives[binding.WAF.EngineKey]
+			Expect(found).To(BeTrue(), "the binding's engine key must have a matching directives entry")
 			Expect(directives).To(ContainSubstring("SecRuleEngine On"))
 		})
 	})
@@ -165,7 +166,7 @@ var _ = Describe("ProcessorConfigReconciler", func() {
 			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, policy)).To(Succeed()) })
 		})
 
-		It("sets Programmed=False/CompileFailed and excludes the policy from the published config", func() {
+		It("sets Programmed=False/CompileFailed and publishes the policy's binding without an engine", func() {
 			Eventually(acceptedStatus(ctx, key)).Should(Equal(metav1.ConditionTrue))
 
 			Eventually(func() (*metav1.Condition, error) {
@@ -186,8 +187,9 @@ var _ = Describe("ProcessorConfigReconciler", func() {
 			// already guarantees the corresponding config was recorded - a
 			// plain Expect, not another Eventually, is enough here.
 			cfg := publishedConfig()
-			route := findRoute(cfg, "procconfig-invalid.example.com", "/")
-			Expect(route).To(BeNil(), "a policy that failed to compile must not cover any route in the published config")
+			binding := findBinding(cfg, procconfig.KindGateway, "default", gatewayName)
+			Expect(binding).NotTo(BeNil(), "a policy that failed to compile must still claim its attachment point")
+			Expect(binding.WAF).To(BeNil(), "a policy that failed to compile must not publish an engine")
 		})
 	})
 
@@ -208,7 +210,7 @@ var _ = Describe("ProcessorConfigReconciler", func() {
 				// Comparing the marshaled JSON bytes (what GRPCPublisher
 				// itself sends and hashes) rather than unmarshaling the
 				// snapshot back into a procconfig.Config and comparing
-				// structs: encoding/json round-trips a nil Routes slice as
+				// structs: encoding/json round-trips a nil Bindings slice as
 				// JSON null, not an empty array, which would make a
 				// struct-level comparison after unmarshaling spuriously
 				// fail (nil slice vs non-nil empty slice).

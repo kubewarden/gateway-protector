@@ -115,16 +115,15 @@ func TestConfigStreamMTLSEndToEnd(t *testing.T) {
 	go func() { _ = subscriber.Run(ctx, func(s *procconfig.Snapshot) { received <- s }) }()
 
 	cfg := &procconfig.Config{
-		Directives: map[string]string{"a": "SecRuleEngine On"},
-		Routes: []procconfig.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &procconfig.WAFRef{EngineKey: "a"}},
-		},
+		SchemaVersion: procconfig.SchemaVersion,
+		Directives:    map[string]string{"a": "SecRuleEngine On"},
+		Bindings:      []procconfig.Binding{testGatewayBinding("gw")},
 	}
 	require.NoError(t, publisher.Publish(ctx, cfg))
 
 	select {
 	case snapshot := <-received:
-		_, matched := snapshot.Match("example.com", "/")
+		_, matched := snapshot.Resolve(testGatewayRequest("gw"))
 		assert.True(t, matched, "expected the published config to reach the subscriber over mTLS")
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for the subscriber to receive the config over mTLS")

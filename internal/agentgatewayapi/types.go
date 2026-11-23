@@ -125,6 +125,14 @@ type ProcessingOptions struct {
 	ResponseTrailerMode *TrailerSendMode `json:"responseTrailerMode,omitempty"`
 }
 
+// CELExpression is a Common Expression Language (CEL) expression that
+// agentgateway evaluates for each request.
+type CELExpression string
+
+// NamespacedMetadataContext holds the CEL expressions of one metadata
+// namespace, keyed by the metadata key within that namespace.
+type NamespacedMetadataContext map[string]CELExpression
+
 // ExtProc points traffic at an external processor server.
 type ExtProc struct {
 	// BackendRef is the external processor server to reach. Supported
@@ -136,6 +144,13 @@ type ExtProc struct {
 	// sent to ext_proc.
 	// +optional
 	ProcessingOptions *ProcessingOptions `json:"processingOptions,omitempty"`
+
+	// MetadataContext is the metadata to send to the external processor
+	// in the metadata_context.filter_metadata field of the
+	// ProcessingRequest, keyed by metadata namespace, then by key within
+	// that namespace. Values are CEL expressions evaluated per request.
+	// +optional
+	MetadataContext map[string]NamespacedMetadataContext `json:"metadataContext,omitempty"`
 }
 
 // ExtProcOrConditional is the extProc policy body. The upstream type also

@@ -13,6 +13,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	configstreamv1 "github.com/kubewarden/gateway-protector/internal/configstream/v1"
+	procconfig "github.com/kubewarden/gateway-protector/internal/processor/config"
 )
 
 // ConfigServer implements the controller side of the config stream (see
@@ -102,9 +103,10 @@ func (s *ConfigServer) latestForTest() *configstreamv1.ConfigSnapshot {
 }
 
 // StreamConfig implements configstreamv1.ConfigStreamServiceServer. The
-// subscriber's first message must be a Subscribe; ConfigServer then pushes
-// the latest snapshot (if any) plus every subsequent Publish to it, and
-// logs every ConfigAck it sends back.
+// subscriber's first message must be a Subscribe announcing the config
+// schema version this controller publishes (procconfig.SchemaVersion);
+// ConfigServer then pushes the latest snapshot (if any) plus every
+// subsequent Publish to it, and logs every ConfigAck it sends back.
 func (s *ConfigServer) StreamConfig(stream configstreamv1.ConfigStreamService_StreamConfigServer) error {
 	ctx := stream.Context()
 
@@ -119,6 +121,20 @@ func (s *ConfigServer) StreamConfig(stream configstreamv1.ConfigStreamService_St
 	}
 
 	logger := logf.FromContext(ctx).WithValues("subscriber", subscribeMsg.GetSubscriberId())
+
+	// A processor of another version would misread this controller's
+	// config: one that predates the schema version field reads the
+	// bindings as an empty routing table and lets every request through.
+	// It gets no config at all instead, and keeps serving the config it
+	// already has, if any.
+	if subscribeMsg.GetSchemaVersion() != procconfig.SchemaVersion {
+		err := fmt.Errorf("the processor accepts config schema version %d, but this controller publishes schema version %d",
+			subscribeMsg.GetSchemaVersion(), procconfig.SchemaVersion)
+		logger.Error(err, "Rejected a processor subscription: the controller and the processor have incompatible versions")
+
+		return status.Error(codes.FailedPrecondition, err.Error()) //nolint:wrapcheck // a gRPC status error is the correct thing to return unwrapped from a gRPC handler
+	}
+
 	sub := s.register(subscribeMsg.GetSubscriberId())
 	defer s.unregister(sub)
 

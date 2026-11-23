@@ -40,9 +40,9 @@ var _ ConfigPublisher = &GRPCPublisher{}
 //
 //   - cfg itself must be canonical: processorconfig.Build (the only
 //     producer of the Config this reconciler publishes) documents its
-//     output ordering (Routes sorted by host/pathPrefix/engineKey) as an
-//     invariant precisely so that rebuilding from the same accepted
-//     WAFPolicy/WAFRuleSet/Gateway/HTTPRoute set - regardless of the
+//     output ordering (Bindings sorted by kind/namespace/name/sectionName)
+//     as an invariant precisely so that rebuilding from the same accepted
+//     WAFPolicy/WAFRuleSet set - regardless of the
 //     arbitrary iteration order the controller-runtime cache's List
 //     returns them in - never spuriously produces a "changed" config.
 //   - encoding/json's own marshaling must be deterministic, which it is:

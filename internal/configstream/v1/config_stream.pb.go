@@ -168,13 +168,19 @@ func (x *StreamConfigResponse) GetSnapshot() *ConfigSnapshot {
 }
 
 // Subscribe must be the first message a subscriber sends on the stream. It
-// identifies the subscriber for the controller's logs/metrics; it carries no
-// data needed for correctness.
+// identifies the subscriber for the controller's logs/metrics, and announces
+// the config schema version the subscriber accepts.
 type Subscribe struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// subscriber_id identifies the connecting processor replica, e.g. its pod
 	// name, for logging and metrics only.
-	SubscriberId  string `protobuf:"bytes,1,opt,name=subscriber_id,json=subscriberId,proto3" json:"subscriber_id,omitempty"`
+	SubscriberId string `protobuf:"bytes,1,opt,name=subscriber_id,json=subscriberId,proto3" json:"subscriber_id,omitempty"`
+	// schema_version is the internal/processor/config.Config schema version
+	// (internal/processor/config.SchemaVersion) the subscriber accepts. The
+	// controller ends the stream with FAILED_PRECONDITION, without sending
+	// any config, when this differs from its own schema version. A
+	// subscriber that predates this field sends 0.
+	SchemaVersion uint32 `protobuf:"varint,2,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -214,6 +220,13 @@ func (x *Subscribe) GetSubscriberId() string {
 		return x.SubscriberId
 	}
 	return ""
+}
+
+func (x *Subscribe) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
 }
 
 // ConfigAck reports whether a subscriber applied a given ConfigSnapshot.
@@ -350,9 +363,10 @@ const file_configstream_v1_config_stream_proto_rawDesc = "" +
 	"\x03ack\x18\x02 \x01(\v2\x1a.configstream.v1.ConfigAckH\x00R\x03ackB\t\n" +
 	"\amessage\"S\n" +
 	"\x14StreamConfigResponse\x12;\n" +
-	"\bsnapshot\x18\x01 \x01(\v2\x1f.configstream.v1.ConfigSnapshotR\bsnapshot\"0\n" +
+	"\bsnapshot\x18\x01 \x01(\v2\x1f.configstream.v1.ConfigSnapshotR\bsnapshot\"W\n" +
 	"\tSubscribe\x12#\n" +
-	"\rsubscriber_id\x18\x01 \x01(\tR\fsubscriberId\"U\n" +
+	"\rsubscriber_id\x18\x01 \x01(\tR\fsubscriberId\x12%\n" +
+	"\x0eschema_version\x18\x02 \x01(\rR\rschemaVersion\"U\n" +
 	"\tConfigAck\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x18\n" +
 	"\aapplied\x18\x02 \x01(\bR\aapplied\x12\x14\n" +

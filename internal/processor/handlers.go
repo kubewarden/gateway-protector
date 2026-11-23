@@ -47,11 +47,12 @@ func headerValue(h *envoy_core_v3.HeaderValue) string {
 }
 
 // processRequestHeaders handles the request-headers phase: it resolves the
-// WAF engine for this request's host+path (the host+path routing table
-// selects the engine, see internal/processor/config.Snapshot.Match) and, if
-// one is attached, starts a Coraza transaction and evaluates phase 1/2
-// rules.
-func (s *Server) processRequestHeaders(ctx context.Context, state *requestState, headers *envoy_service_ext_proc_v3.HttpHeaders) []*envoy_service_ext_proc_v3.ProcessingResponse {
+// WAF engine for this request from the Identity agentgateway sends in
+// metadata (see identityFromMetadata and
+// internal/processor/config.Snapshot.Resolve) and, if one is attached,
+// starts a Coraza transaction and evaluates phase 1/2 rules. A request
+// without a valid Identity fails closed.
+func (s *Server) processRequestHeaders(ctx context.Context, state *requestState, headers *envoy_service_ext_proc_v3.HttpHeaders, metadata *envoy_core_v3.Metadata) []*envoy_service_ext_proc_v3.ProcessingResponse {
 	if headers == nil || headers.GetHeaders() == nil {
 		s.logger.WarnContext(ctx, "ext_proc sent request headers phase with no headers")
 		return singleResponse(continueRequestHeaders())
@@ -87,14 +88,21 @@ func (s *Server) processRequestHeaders(ctx context.Context, state *requestState,
 		return singleResponse(continueRequestHeaders())
 	}
 
-	waf, matched := snapshot.Match(authority, path)
+	identity, err := identityFromMetadata(metadata)
+	if err != nil {
+		return singleResponse(s.failAndClose(ctx, state, "Request has no valid identity in the ext_proc metadata, failing closed", err))
+	}
+	state.identity = identity
+
+	waf, matched := snapshot.Resolve(identity)
 	if !matched {
-		s.logger.DebugContext(ctx, "No route matched, request is unprotected", slog.String("authority", authority), slog.String("path", path))
+		s.logger.DebugContext(ctx, "No WAFPolicy applies, request is unprotected",
+			slog.String("authority", authority), slog.String("path", path), slog.Any("identity", identity))
 		return singleResponse(continueRequestHeaders())
 	}
 	if waf == nil {
-		// Route matched but has no WAF engine attached (e.g. a future
-		// DLP-only route).
+		// A binding matched but has no WAF engine attached: its policy
+		// failed to compile (see config.Binding.WAF).
 		return singleResponse(continueRequestHeaders())
 	}
 
@@ -495,6 +503,7 @@ func (s *Server) blockAndClose(ctx context.Context, state *requestState, interru
 	s.logger.WarnContext(ctx, "WAF blocked traffic",
 		slog.String("authority", state.authority),
 		slog.String("path", state.path),
+		slog.Any("identity", state.identity),
 		slog.Int("rule_id", interruption.RuleID),
 		slog.String("action", interruption.Action))
 
@@ -503,17 +512,19 @@ func (s *Server) blockAndClose(ctx context.Context, state *requestState, interru
 	return resp
 }
 
-// failAndClose is blockAndClose's counterpart for a Coraza engine error
-// (as opposed to a rule interruption): it finalizes the transaction and
-// builds the ImmediateResponse that fails the request/response closed. We
-// prefer failing closed here rather than letting the request/response
-// through uninspected, which would give an attacker able to trigger the
-// failure a free pass around the WAF. Any responses owed for withheld
-// messages are superseded, same as blockAndClose.
+// failAndClose is blockAndClose's counterpart for a failure that is not a
+// rule interruption - a Coraza engine error, or a request without a valid
+// identity: it finalizes the transaction (if any) and builds the
+// ImmediateResponse that fails the request/response closed. We prefer
+// failing closed here rather than letting the request/response through
+// uninspected, which would give an attacker able to trigger the failure a
+// free pass around the WAF. Any responses owed for withheld messages are
+// superseded, same as blockAndClose.
 func (s *Server) failAndClose(ctx context.Context, state *requestState, msg string, err error) *envoy_service_ext_proc_v3.ProcessingResponse {
 	s.logger.ErrorContext(ctx, msg,
 		slog.String("authority", state.authority),
 		slog.String("path", state.path),
+		slog.Any("identity", state.identity),
 		slog.Any("error", err))
 
 	resp := internalErrorResponse()

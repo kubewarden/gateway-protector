@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,9 +21,10 @@ import (
 const subscriberTestBufSize = 1024 * 1024
 
 const validConfigJSON = `{
+  "schemaVersion": 2,
   "directives": {"a": "SecRuleEngine On"},
-  "routes": [
-    {"host": "example.com", "pathPrefix": "/", "waf": {"engineKey": "a"}}
+  "bindings": [
+    {"kind": "Gateway", "namespace": "infra", "name": "gw", "waf": {"engineKey": "a"}}
   ]
 }`
 
@@ -37,8 +39,9 @@ type fakeConfigStreamServer struct {
 
 	snapshots chan *configstreamv1.ConfigSnapshot
 
-	mu   sync.Mutex
-	acks []*configstreamv1.ConfigAck
+	mu         sync.Mutex
+	acks       []*configstreamv1.ConfigAck
+	subscribes []*configstreamv1.Subscribe
 }
 
 func newFakeConfigStreamServer() *fakeConfigStreamServer {
@@ -56,13 +59,24 @@ func (f *fakeConfigStreamServer) recordedAcks() []*configstreamv1.ConfigAck {
 	return append([]*configstreamv1.ConfigAck(nil), f.acks...)
 }
 
+func (f *fakeConfigStreamServer) recordedSubscribes() []*configstreamv1.Subscribe {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]*configstreamv1.Subscribe(nil), f.subscribes...)
+}
+
 func (f *fakeConfigStreamServer) StreamConfig(stream configstreamv1.ConfigStreamService_StreamConfigServer) error {
 	// The first message must be Subscribe, mirroring the real
-	// ConfigServer's contract; this test double doesn't need the
-	// subscriber ID for anything.
-	if _, err := stream.Recv(); err != nil {
+	// ConfigServer's contract; it is recorded so tests can assert on it.
+	initial, err := stream.Recv()
+	if err != nil {
 		return err
 	}
+
+	f.mu.Lock()
+	f.subscribes = append(f.subscribes, initial.GetSubscribe())
+	f.mu.Unlock()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -127,8 +141,8 @@ func TestSubscriberAppliesInitialSnapshot(t *testing.T) {
 
 	select {
 	case snapshot := <-received:
-		_, matched := snapshot.Match("example.com", "/")
-		assert.True(t, matched, "expected the applied snapshot to match example.com")
+		_, matched := snapshot.Resolve(gatewayIdentity("gw"))
+		assert.True(t, matched, "expected the applied snapshot to bind the infra/gw Gateway")
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for the subscriber to apply the initial snapshot")
 	}
@@ -137,6 +151,12 @@ func TestSubscriberAppliesInitialSnapshot(t *testing.T) {
 		acks := server.recordedAcks()
 		return len(acks) == 1 && acks[0].GetApplied() && acks[0].GetVersion() == "v1"
 	}, 2*time.Second, 10*time.Millisecond, "expected a single applied ack for v1")
+
+	subscribes := server.recordedSubscribes()
+	require.Len(t, subscribes, 1)
+	assert.Equal(t, "test-replica", subscribes[0].GetSubscriberId())
+	assert.EqualValues(t, SchemaVersion, subscribes[0].GetSchemaVersion(),
+		"the subscriber must announce the config schema version it accepts")
 }
 
 func TestSubscriberAppliesSubsequentSnapshot(t *testing.T) {
@@ -153,17 +173,18 @@ func TestSubscriberAppliesSubsequentSnapshot(t *testing.T) {
 	<-received // initial snapshot
 
 	updatedJSON := `{
+  "schemaVersion": 2,
   "directives": {"a": "SecRuleEngine On"},
-  "routes": [
-    {"host": "updated.example.com", "pathPrefix": "/", "waf": {"engineKey": "a"}}
+  "bindings": [
+    {"kind": "Gateway", "namespace": "infra", "name": "updated-gw", "waf": {"engineKey": "a"}}
   ]
 }`
 	server.push(&configstreamv1.ConfigSnapshot{Version: "v2", ConfigJson: []byte(updatedJSON)})
 
 	select {
 	case snapshot := <-received:
-		_, matched := snapshot.Match("updated.example.com", "/")
-		assert.True(t, matched, "expected the second applied snapshot to match updated.example.com")
+		_, matched := snapshot.Resolve(gatewayIdentity("updated-gw"))
+		assert.True(t, matched, "expected the second applied snapshot to bind the infra/updated-gw Gateway")
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for the subscriber to apply the updated snapshot")
 	}
@@ -198,6 +219,39 @@ func TestSubscriberRejectsInvalidSnapshotAndKeepsPrevious(t *testing.T) {
 		t.Fatal("onChange must not be called for an invalid snapshot")
 	case <-time.After(200 * time.Millisecond):
 		// Expected: no second onChange call.
+	}
+}
+
+// TestSubscriberRejectsConfigOfAnotherSchemaVersion covers a processor that
+// receives a config in the previous format (schema version 1: no
+// schemaVersion field, a table of hosts and paths) from an older
+// controller: it must reject the config, not read it as an empty set of
+// bindings that leaves every request uninspected.
+func TestSubscriberRejectsConfigOfAnotherSchemaVersion(t *testing.T) {
+	subscriber, server := startTestSubscriber(t)
+
+	server.push(&configstreamv1.ConfigSnapshot{Version: "v1", ConfigJson: []byte(`{
+  "directives": {"a": "SecRuleEngine On"},
+  "routes": [
+    {"host": "example.com", "pathPrefix": "/", "waf": {"engineKey": "a"}}
+  ]
+}`)})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	received := make(chan *Snapshot, 1)
+	go func() { _ = subscriber.Run(ctx, func(s *Snapshot) { received <- s }) }()
+
+	require.Eventually(t, func() bool {
+		acks := server.recordedAcks()
+		return len(acks) == 1 && !acks[0].GetApplied() && strings.Contains(acks[0].GetError(), "schemaVersion")
+	}, 2*time.Second, 10*time.Millisecond, "expected a rejected ack that names the schema version")
+
+	select {
+	case <-received:
+		t.Fatal("onChange must not be called for a config of another schema version")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
@@ -238,14 +292,13 @@ func TestSubscriberForwardsCompileOptionsToCompile(t *testing.T) {
 	var buf bytes.Buffer
 	subscriber.SetCompileOptions(WithMatchedRuleWriter(&buf))
 
-	configJSON, err := json.Marshal(map[string]any{
-		"directives": map[string]string{
+	configJSON, err := json.Marshal(Config{
+		SchemaVersion: SchemaVersion,
+		Directives: map[string]string{
 			"a": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403,log"` + "\n",
 		},
-		"routes": []map[string]any{
-			{"host": "example.com", "pathPrefix": "/", "waf": map[string]string{"engineKey": "a"}},
-		},
+		Bindings: []Binding{gatewayBinding("gw", "a")},
 	})
 	require.NoError(t, err)
 
@@ -264,7 +317,7 @@ func TestSubscriberForwardsCompileOptionsToCompile(t *testing.T) {
 		t.Fatal("timed out waiting for the subscriber to apply the config")
 	}
 
-	waf, matched := snapshot.Match("example.com", "/")
+	waf, matched := snapshot.Resolve(gatewayIdentity("gw"))
 	require.True(t, matched)
 
 	tx := waf.NewTransaction()

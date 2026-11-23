@@ -12,6 +12,7 @@ import (
 
 	"github.com/kubewarden/gateway-protector/internal/agentgatewayapi"
 	"github.com/kubewarden/gateway-protector/internal/controller/processorconfig"
+	procconfig "github.com/kubewarden/gateway-protector/internal/processor/config"
 )
 
 func TestWiringPolicyName(t *testing.T) {
@@ -61,7 +62,7 @@ func TestDesiredWiringPolicy(t *testing.T) {
 	target := policy.Spec.TargetRefs[0]
 	assert.Equal(t, gatewayv1.Kind("HTTPRoute"), target.Kind)
 	assert.Equal(t, gatewayv1.ObjectName("shop"), target.Name)
-	assert.Nil(t, target.SectionName, "wiring targets the whole route; per-rule selection is the processor's job")
+	assert.Nil(t, target.SectionName, "wiring targets the whole route; the processor selects the engine per request")
 
 	require.NotNil(t, policy.Spec.Traffic)
 	require.NotNil(t, policy.Spec.Traffic.ExtProc)
@@ -80,4 +81,27 @@ func TestDesiredWiringPolicy(t *testing.T) {
 	assert.Equal(t, agentgatewayapi.BodySendModeNone, *options.ResponseBodyMode)
 	assert.Equal(t, agentgatewayapi.TrailerSendModeSkip, *options.RequestTrailerMode)
 	assert.Equal(t, agentgatewayapi.TrailerSendModeSkip, *options.ResponseTrailerMode)
+
+	assert.Equal(t, wiringMetadataContext(), policy.Spec.Traffic.ExtProc.MetadataContext)
+}
+
+// TestWiringMetadataContextSendsEveryIdentityKey pins that the generated
+// metadataContext fills every key the processor requires (see
+// internal/processor's identityFromMetadata), from agentgateway's own
+// routing decision: proxy.* variables only, never request data a client
+// controls.
+func TestWiringMetadataContextSendsEveryIdentityKey(t *testing.T) {
+	metadata := wiringMetadataContext()
+	require.Len(t, metadata, 1, "only the processor's own metadata namespace")
+
+	expressions := metadata[procconfig.MetadataNamespace]
+	assert.Equal(t, agentgatewayapi.NamespacedMetadataContext{
+		procconfig.MetadataKeyGatewayNamespace: "proxy.gateway.namespace",
+		procconfig.MetadataKeyGatewayName:      "proxy.gateway.name",
+		procconfig.MetadataKeyListenerName:     "proxy.listener.name",
+		procconfig.MetadataKeyRouteKind:        `default(proxy.route.kind, "")`,
+		procconfig.MetadataKeyRouteNamespace:   "proxy.route.namespace",
+		procconfig.MetadataKeyRouteName:        "proxy.route.name",
+		procconfig.MetadataKeyRouteRule:        `default(proxy.route.rule, "")`,
+	}, expressions)
 }

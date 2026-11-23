@@ -17,9 +17,8 @@ func TestCompileAndBlock(t *testing.T) {
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403,msg:'blocked by test rule'"` + "\n",
 		},
-		Routes: []Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "blocklist"}},
-		},
+		SchemaVersion: SchemaVersion,
+		Bindings:      []Binding{gatewayBinding("gw", "blocklist")},
 	}
 
 	require.NoError(t, Validate(cfg))
@@ -27,7 +26,7 @@ func TestCompileAndBlock(t *testing.T) {
 	snapshot, err := Compile(cfg, nil)
 	require.NoError(t, err)
 
-	waf, matched := snapshot.Match("example.com", "/")
+	waf, matched := snapshot.Resolve(gatewayIdentity("gw"))
 	require.True(t, matched)
 	require.NotNil(t, waf)
 
@@ -69,9 +68,8 @@ func TestCompileWithCoreRuleSet(t *testing.T) {
 				"Include @crs-setup.conf.example\n" +
 				"Include @owasp_crs/*.conf\n",
 		},
-		Routes: []Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "crs"}},
-		},
+		SchemaVersion: SchemaVersion,
+		Bindings:      []Binding{gatewayBinding("gw", "crs")},
 	}
 
 	require.NoError(t, Validate(cfg))
@@ -100,9 +98,10 @@ func TestCompileRequestBodyAccessIsDirectiveDriven(t *testing.T) {
 			"body-on":  "SecRuleEngine On\nSecRequestBodyAccess On\n" + bodyRule,
 			"body-off": "SecRuleEngine On\n" + bodyRule,
 		},
-		Routes: []Route{
-			{Host: "on.example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "body-on"}},
-			{Host: "off.example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "body-off"}},
+		SchemaVersion: SchemaVersion,
+		Bindings: []Binding{
+			gatewayBinding("on-gw", "body-on"),
+			gatewayBinding("off-gw", "body-off"),
 		},
 	}
 
@@ -111,10 +110,10 @@ func TestCompileRequestBodyAccessIsDirectiveDriven(t *testing.T) {
 	snapshot, err := Compile(cfg, nil)
 	require.NoError(t, err)
 
-	runRequest := func(t *testing.T, host string) *ctypes.Interruption {
+	runRequest := func(t *testing.T, gateway string) *ctypes.Interruption {
 		t.Helper()
 
-		waf, matched := snapshot.Match(host, "/")
+		waf, matched := snapshot.Resolve(gatewayIdentity(gateway))
 		require.True(t, matched)
 		require.NotNil(t, waf)
 
@@ -138,13 +137,13 @@ func TestCompileRequestBodyAccessIsDirectiveDriven(t *testing.T) {
 	}
 
 	t.Run("SecRequestBodyAccess On inspects the body", func(t *testing.T) {
-		interruption := runRequest(t, "on.example.com")
+		interruption := runRequest(t, "on-gw")
 		require.NotNil(t, interruption)
 		assert.Equal(t, 2000, interruption.RuleID)
 	})
 
 	t.Run("no SecRequestBodyAccess directive leaves the body uninspected", func(t *testing.T) {
-		assert.Nil(t, runRequest(t, "off.example.com"))
+		assert.Nil(t, runRequest(t, "off-gw"))
 	})
 }
 
@@ -158,7 +157,7 @@ func TestCompileRequestBodyAccessIsDirectiveDriven(t *testing.T) {
 // TestServer_SetSnapshot_InFlightRequestSurvivesPreviousSnapshotClose in
 // internal/processor/server_test.go, which closes an engine a transaction
 // was already created from): the request-headers handler always loads the
-// active Snapshot and calls Match before creating a transaction, so if a
+// active Snapshot and calls Resolve before creating a transaction, so if a
 // config reload's SetSnapshot races ahead and closes the Snapshot a handler
 // is about to use, the transaction it creates afterward must still evaluate
 // rules correctly.
@@ -173,9 +172,8 @@ func TestSnapshotCloseThenNewTransactionStillWorks(t *testing.T) {
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@rx ^malicious$" "id:1000,phase:1,deny,status:403,msg:'blocked by test rule'"` + "\n",
 		},
-		Routes: []Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "blocklist"}},
-		},
+		SchemaVersion: SchemaVersion,
+		Bindings:      []Binding{gatewayBinding("gw", "blocklist")},
 	}
 
 	require.NoError(t, Validate(cfg))
@@ -183,7 +181,7 @@ func TestSnapshotCloseThenNewTransactionStillWorks(t *testing.T) {
 	snapshot, err := Compile(cfg, nil)
 	require.NoError(t, err)
 
-	waf, matched := snapshot.Match("example.com", "/")
+	waf, matched := snapshot.Resolve(gatewayIdentity("gw"))
 	require.True(t, matched)
 	require.NotNil(t, waf)
 
@@ -224,9 +222,8 @@ func TestCompileWithMatchedRuleWriter(t *testing.T) {
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403,log,msg:'blocked by test rule'"` + "\n",
 		},
-		Routes: []Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "blocklist"}},
-		},
+		SchemaVersion: SchemaVersion,
+		Bindings:      []Binding{gatewayBinding("gw", "blocklist")},
 	}
 
 	require.NoError(t, Validate(cfg))
@@ -236,7 +233,7 @@ func TestCompileWithMatchedRuleWriter(t *testing.T) {
 	snapshot, err := Compile(cfg, nil, WithMatchedRuleWriter(&buf))
 	require.NoError(t, err)
 
-	waf, matched := snapshot.Match("example.com", "/")
+	waf, matched := snapshot.Resolve(gatewayIdentity("gw"))
 	require.True(t, matched)
 	require.NotNil(t, waf)
 
@@ -263,9 +260,10 @@ func TestCompileWithMatchedRuleWriter_ConcurrentEnginesAreSafe(t *testing.T) {
 			"engine-a": "SecRuleEngine On\n" + rule,
 			"engine-b": "SecRuleEngine On\n" + rule,
 		},
-		Routes: []Route{
-			{Host: "a.example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "engine-a"}},
-			{Host: "b.example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "engine-b"}},
+		SchemaVersion: SchemaVersion,
+		Bindings: []Binding{
+			gatewayBinding("engine-a-gw", "engine-a"),
+			gatewayBinding("engine-b-gw", "engine-b"),
 		},
 	}
 
@@ -276,8 +274,8 @@ func TestCompileWithMatchedRuleWriter_ConcurrentEnginesAreSafe(t *testing.T) {
 	snapshot, err := Compile(cfg, nil, WithMatchedRuleWriter(&buf))
 	require.NoError(t, err)
 
-	trigger := func(host string) {
-		waf, matched := snapshot.Match(host, "/")
+	trigger := func(gateway string) {
+		waf, matched := snapshot.Resolve(gatewayIdentity(gateway))
 		require.True(t, matched)
 
 		tx := waf.NewTransaction()
@@ -290,8 +288,8 @@ func TestCompileWithMatchedRuleWriter_ConcurrentEnginesAreSafe(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 20 {
 		wg.Add(2)
-		go func() { defer wg.Done(); trigger("a.example.com") }()
-		go func() { defer wg.Done(); trigger("b.example.com") }()
+		go func() { defer wg.Done(); trigger("engine-a-gw") }()
+		go func() { defer wg.Done(); trigger("engine-b-gw") }()
 	}
 	wg.Wait()
 

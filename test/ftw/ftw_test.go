@@ -30,8 +30,9 @@
 //
 // This harness deliberately does not force a Host header onto test
 // requests: go-ftw's generated config only overrides dest_addr/port (see
-// ftwInputOverride), and both agentgateway's route and the processor's
-// engine-selection table are catch-all entries that match any Host. Several CRS
+// ftwInputOverride), and agentgateway's route is a catch-all that matches
+// any Host, while the processor selects its engine from the identity that
+// agentgateway reports, never from the Host. Several CRS
 // tests use a specific Host header - or its absence - as part of the
 // attack they exercise, so every test's Host header arrives exactly as
 // the CRS authors wrote it, and no overrides are needed for those tests.
@@ -93,9 +94,15 @@ const (
 	albedoPort  = "8080"
 
 	// engineKey is the key the CRS directive block is compiled under in
-	// the processor's Snapshot; arbitrary, it only links the catch-all
-	// route to the engine.
+	// the processor's Snapshot; arbitrary, it only links the binding to
+	// the engine.
 	engineKey = "crs-ftw"
+
+	// gatewayIdentity is the namespace and name of the Gateway that
+	// agentgateway reports for every request (see the metadataContext in
+	// agentgatewayConfigTemplate), and that the processor's config binds
+	// to the engine.
+	gatewayIdentity = "crs-ftw"
 
 	// goFtwModule/goFtwVersion pin the exact go-ftw release this harness
 	// invokes via `go run`, independent of this module's own go.mod (see
@@ -129,7 +136,11 @@ var crsFTWDirectives string
 // controller renders into the generated AgentgatewayPolicy in production
 // (see internal/controller.desiredWiringPolicy) - both body phases
 // enabled, since the CRS directives inspect request and response bodies.
-// The two %s verbs are the ext_proc host:port and the albedo host:port.
+// The metadataContext has the keys of the production one, but with
+// literal values instead of agentgateway's proxy.* variables: a
+// standalone agentgateway has no Kubernetes Gateway or HTTPRoute to
+// report, and the processor fails closed without these keys. The two %s
+// verbs are the ext_proc host:port and the albedo host:port.
 const agentgatewayConfigTemplate = `binds:
 - port: ` + gatewayPort + `
   listeners:
@@ -147,12 +158,21 @@ const agentgatewayConfigTemplate = `binds:
             responseBodyMode: fullDuplexStreamed
             requestTrailerMode: skip
             responseTrailerMode: skip
+          metadataContext:
+            gateway-protector.kubewarden.io:
+              gatewayNamespace: "'crs-ftw'"
+              gatewayName: "'crs-ftw'"
+              listenerName: "'http'"
+              routeKind: "''"
+              routeNamespace: "'crs-ftw'"
+              routeName: "'crs-ftw'"
+              routeRule: "''"
       backends:
       - host: %s
 `
 
 // startProcessor compiles the CRS directive block into a Snapshot with a
-// single catch-all route, wires matchedRulesLogPath as its
+// single binding, wires matchedRulesLogPath as its
 // WithMatchedRuleWriter sink (see cmd/processor's --waf-matched-rules-log,
 // which this exercises the same underlying mechanism as), and serves the
 // ext_proc gRPC service on an ephemeral loopback port, returning that
@@ -165,11 +185,13 @@ func startProcessor(t *testing.T, logger *slog.Logger, matchedRulesLogPath strin
 	t.Cleanup(func() { _ = matchedRulesFile.Close() })
 
 	cfg := &config.Config{
-		Directives: map[string]string{engineKey: crsFTWDirectives},
-		Routes: []config.Route{{
-			Host:       "*",
-			PathPrefix: "/",
-			WAF:        &config.WAFRef{EngineKey: engineKey},
+		SchemaVersion: config.SchemaVersion,
+		Directives:    map[string]string{engineKey: crsFTWDirectives},
+		Bindings: []config.Binding{{
+			Kind:      config.KindGateway,
+			Namespace: gatewayIdentity,
+			Name:      gatewayIdentity,
+			WAF:       &config.WAFRef{EngineKey: engineKey},
 		}},
 	}
 	require.NoError(t, config.Validate(cfg))
@@ -376,8 +398,7 @@ type ftwTestInput struct {
 // test itself declares. Deliberately not setting headers/virtual_host_mode
 // (see this package's doc comment) - every test's own Host header (or
 // lack of one) reaches agentgateway/the processor exactly as the CRS
-// authors wrote it, since both use a catch-all route with no per-host
-// selection to satisfy.
+// authors wrote it, since neither selects anything by host.
 type ftwInputOverride struct {
 	DestAddr string `json:"dest_addr"`
 	Port     int    `json:"port"`
