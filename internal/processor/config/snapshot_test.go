@@ -33,110 +33,136 @@ func (f *closableFakeWAF) Close() error {
 	return f.closeErr
 }
 
-func TestSnapshotMatch(t *testing.T) {
-	engineDefault := &fakeWAF{name: "default"}
-	engineAPI := &fakeWAF{name: "api"}
-	engineAPIv1 := &fakeWAF{name: "api-v1"}
-	engineWildcard := &fakeWAF{name: "wildcard"}
-	engineCatchAll := &fakeWAF{name: "catch-all"}
+// gatewayIdentity returns the Identity of a request that the "infra/<name>"
+// Gateway accepted on its "http" listener and sent to the unnamed rule of
+// the "app/web" HTTPRoute.
+func gatewayIdentity(name string) Identity {
+	return Identity{
+		GatewayNamespace: "infra",
+		GatewayName:      name,
+		ListenerName:     "http",
+		RouteKind:        KindHTTPRoute,
+		RouteNamespace:   "app",
+		RouteName:        "web",
+	}
+}
+
+// gatewayBinding binds the whole "infra/<name>" Gateway to engineKey.
+func gatewayBinding(name, engineKey string) Binding {
+	return Binding{Kind: KindGateway, Namespace: "infra", Name: name, WAF: &WAFRef{EngineKey: engineKey}}
+}
+
+func TestSnapshotResolve(t *testing.T) {
+	engineGateway := &fakeWAF{name: "gateway"}
+	engineListener := &fakeWAF{name: "listener"}
+	engineRoute := &fakeWAF{name: "route"}
+	engineRule := &fakeWAF{name: "rule"}
+	engineOther := &fakeWAF{name: "other"}
 	engines := map[string]coraza.WAF{
-		"default":   engineDefault,
-		"api":       engineAPI,
-		"api-v1":    engineAPIv1,
-		"wildcard":  engineWildcard,
-		"catch-all": engineCatchAll,
+		"gateway":  engineGateway,
+		"listener": engineListener,
+		"route":    engineRoute,
+		"rule":     engineRule,
+		"other":    engineOther,
 	}
 
-	routes := []Route{
-		{Host: "example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "default"}},
-		{Host: "example.com", PathPrefix: "/api", WAF: &WAFRef{EngineKey: "api"}},
-		{Host: "no-waf.example.com", PathPrefix: "/"},
-		{Host: "api.example.com", PathPrefix: "/v1", WAF: &WAFRef{EngineKey: "api-v1"}},
-		{Host: "*.example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "wildcard"}},
-		{Host: "*", PathPrefix: "/", WAF: &WAFRef{EngineKey: "catch-all"}},
+	bindings := []Binding{
+		gatewayBinding("shared-gw", "gateway"),
+		{Kind: KindGateway, Namespace: "infra", Name: "shared-gw", SectionName: "admin", WAF: &WAFRef{EngineKey: "listener"}},
+		{Kind: KindHTTPRoute, Namespace: "team-shop", Name: "shop", WAF: &WAFRef{EngineKey: "route"}},
+		{Kind: KindHTTPRoute, Namespace: "team-shop", Name: "shop", SectionName: "checkout", WAF: &WAFRef{EngineKey: "rule"}},
+		// A binding without an engine: its policy failed to compile.
+		{Kind: KindHTTPRoute, Namespace: "team-shop", Name: "shop", SectionName: "broken"},
+		gatewayBinding("other-gw", "other"),
 	}
 
-	snapshot := newSnapshot(engines, routes)
+	snapshot := newSnapshot(engines, bindings)
+
+	request := func(listener, routeNamespace, routeName, rule string) Identity {
+		return Identity{
+			GatewayNamespace: "infra",
+			GatewayName:      "shared-gw",
+			ListenerName:     listener,
+			RouteKind:        KindHTTPRoute,
+			RouteNamespace:   routeNamespace,
+			RouteName:        routeName,
+			RouteRule:        rule,
+		}
+	}
 
 	tests := []struct {
 		name       string
-		host       string
-		path       string
+		identity   Identity
 		wantMatch  bool
 		wantEngine coraza.WAF
 	}{
 		{
-			name:       "longest prefix wins",
-			host:       "example.com",
-			path:       "/api/orders",
+			name:       "rule binding wins",
+			identity:   request("http", "team-shop", "shop", "checkout"),
 			wantMatch:  true,
-			wantEngine: engineAPI,
+			wantEngine: engineRule,
 		},
 		{
-			name:       "falls back to shorter prefix",
-			host:       "example.com",
-			path:       "/other",
+			name:       "route binding covers the other rules of the route",
+			identity:   request("http", "team-shop", "shop", "browse"),
 			wantMatch:  true,
-			wantEngine: engineDefault,
+			wantEngine: engineRoute,
 		},
 		{
-			name:       "port is stripped when no exact match",
-			host:       "example.com:8443",
-			path:       "/other",
+			name:       "route binding covers an unnamed rule",
+			identity:   request("http", "team-shop", "shop", ""),
 			wantMatch:  true,
-			wantEngine: engineDefault,
+			wantEngine: engineRoute,
 		},
 		{
-			name:       "wildcard matches a subdomain with no exact route",
-			host:       "shop.example.com",
-			path:       "/",
+			name:       "route binding wins over the listener binding",
+			identity:   request("admin", "team-shop", "shop", ""),
 			wantMatch:  true,
-			wantEngine: engineWildcard,
+			wantEngine: engineRoute,
 		},
 		{
-			name:       "exact match wins over wildcard for the bare suffix",
-			host:       "no-waf.example.com",
-			path:       "/",
-			wantMatch:  true,
-			wantEngine: nil,
+			name:      "a binding without an engine stops the resolution",
+			identity:  request("http", "team-shop", "shop", "broken"),
+			wantMatch: true,
 		},
 		{
-			name:       "exact match wins over wildcard when both apply",
-			host:       "example.com",
-			path:       "/unrouted",
+			name:       "listener binding wins over the gateway binding",
+			identity:   request("admin", "team-blog", "blog", ""),
 			wantMatch:  true,
-			wantEngine: engineDefault,
+			wantEngine: engineListener,
 		},
 		{
-			name:       "catch-all matches any other host",
-			host:       "unknown.example.org",
-			path:       "/",
+			name:       "gateway binding covers the other listeners",
+			identity:   request("http", "team-blog", "blog", ""),
 			wantMatch:  true,
-			wantEngine: engineCatchAll,
+			wantEngine: engineGateway,
 		},
 		{
-			name:       "exact host's own path wins over the wildcard it also matches",
-			host:       "api.example.com",
-			path:       "/v1/users",
+			name:       "the gateway of the request selects the engine",
+			identity:   Identity{GatewayNamespace: "infra", GatewayName: "other-gw", ListenerName: "http", RouteKind: KindHTTPRoute, RouteNamespace: "team-blog", RouteName: "blog"},
 			wantMatch:  true,
-			wantEngine: engineAPIv1,
+			wantEngine: engineOther,
 		},
 		{
-			name:       "exact host found but its path misses: falls through to the wildcard tier",
-			host:       "api.example.com",
-			path:       "/other",
+			name: "route bindings apply only to HTTPRoute requests",
+			identity: Identity{
+				GatewayNamespace: "infra", GatewayName: "shared-gw", ListenerName: "http",
+				RouteKind: "GRPCRoute", RouteNamespace: "team-shop", RouteName: "shop", RouteRule: "checkout",
+			},
 			wantMatch:  true,
-			wantEngine: engineWildcard,
+			wantEngine: engineGateway,
+		},
+		{
+			name:      "no binding for the gateway",
+			identity:  Identity{GatewayNamespace: "infra", GatewayName: "unknown-gw", ListenerName: "http", RouteKind: KindHTTPRoute, RouteNamespace: "team-blog", RouteName: "blog"},
+			wantMatch: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			waf, matched := snapshot.Match(tt.host, tt.path)
+			waf, matched := snapshot.Resolve(tt.identity)
 			require.Equal(t, tt.wantMatch, matched)
-			if !matched {
-				return
-			}
 			if tt.wantEngine == nil {
 				assert.Nil(t, waf)
 			} else {
@@ -146,119 +172,30 @@ func TestSnapshotMatch(t *testing.T) {
 	}
 }
 
-func TestSnapshotWildcardExcludesBareSuffix(t *testing.T) {
-	engineWildcard := &fakeWAF{name: "wildcard"}
-	engines := map[string]coraza.WAF{"wildcard": engineWildcard}
+func TestSnapshotResolveNoBindings(t *testing.T) {
+	snapshot := newSnapshot(map[string]coraza.WAF{}, nil)
 
-	routes := []Route{
-		{Host: "*.example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "wildcard"}},
-	}
-
-	snapshot := newSnapshot(engines, routes)
-
-	_, matched := snapshot.Match("example.com", "/")
-	assert.False(t, matched, "*.example.com must not match the bare suffix example.com")
-
-	waf, matched := snapshot.Match("shop.example.com", "/")
-	require.True(t, matched)
-	assert.Same(t, engineWildcard, waf)
+	_, matched := snapshot.Resolve(gatewayIdentity("shared-gw"))
+	assert.False(t, matched)
 }
 
-func TestSnapshotMatchWildcardSpecificity(t *testing.T) {
-	engineBroad := &fakeWAF{name: "broad"}
-	engineNarrow := &fakeWAF{name: "narrow"}
-	engines := map[string]coraza.WAF{"broad": engineBroad, "narrow": engineNarrow}
-
-	routes := []Route{
-		{Host: "*.example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "broad"}},
-		{Host: "*.internal.example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "narrow"}},
-	}
-
-	snapshot := newSnapshot(engines, routes)
-
-	waf, matched := snapshot.Match("api.internal.example.com", "/")
-	require.True(t, matched)
-	assert.Same(t, engineNarrow, waf, "the more specific wildcard suffix should win")
-
-	waf, matched = snapshot.Match("shop.example.com", "/")
-	require.True(t, matched)
-	assert.Same(t, engineBroad, waf)
-}
-
-func TestSnapshotNoMatch(t *testing.T) {
-	t.Run("empty snapshot", func(t *testing.T) {
-		snapshot := newSnapshot(map[string]coraza.WAF{}, nil)
-
-		_, matched := snapshot.Match("unknown.example.com", "/")
-		assert.False(t, matched)
+// TestSnapshotResolveListenerWithoutName pins that an empty listener name
+// never matches a listener binding: the whole-Gateway binding, whose
+// sectionName is also empty, is the only Gateway-level candidate.
+func TestSnapshotResolveListenerWithoutName(t *testing.T) {
+	engineGateway := &fakeWAF{name: "gateway"}
+	engineListener := &fakeWAF{name: "listener"}
+	snapshot := newSnapshot(map[string]coraza.WAF{"gateway": engineGateway, "listener": engineListener}, []Binding{
+		gatewayBinding("shared-gw", "gateway"),
+		{Kind: KindGateway, Namespace: "infra", Name: "shared-gw", SectionName: "http", WAF: &WAFRef{EngineKey: "listener"}},
 	})
 
-	// A populated snapshot with no catch-all route: every case below must
-	// exhaust the exact, port-stripped, and wildcard tiers and still come
-	// up empty, rather than the presence of *some* routes accidentally
-	// producing a match.
-	engineExact := &fakeWAF{name: "exact"}
-	engineWildcard := &fakeWAF{name: "wildcard"}
-	engines := map[string]coraza.WAF{"exact": engineExact, "wildcard": engineWildcard}
+	identity := gatewayIdentity("shared-gw")
+	identity.ListenerName = ""
 
-	routes := []Route{
-		{Host: "example.com", PathPrefix: "/api", WAF: &WAFRef{EngineKey: "exact"}},
-		{Host: "*.example.com", PathPrefix: "/shop", WAF: &WAFRef{EngineKey: "wildcard"}},
-	}
-
-	snapshot := newSnapshot(engines, routes)
-
-	tests := []struct {
-		name string
-		host string
-		path string
-	}{
-		{
-			name: "unknown host matches no exact or wildcard route",
-			host: "unknown.example.org",
-			path: "/",
-		},
-		{
-			name: "unknown host with a port still misses after stripping it",
-			host: "unknown.example.org:8443",
-			path: "/",
-		},
-		{
-			name: "exact host found, but no route's path matches",
-			host: "example.com",
-			path: "/other",
-		},
-		{
-			name: "wildcard-matched host found, but no route's path matches",
-			host: "shop.example.com",
-			path: "/other",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, matched := snapshot.Match(tt.host, tt.path)
-			assert.False(t, matched)
-		})
-	}
-}
-
-func TestStripPort(t *testing.T) {
-	tests := []struct {
-		host string
-		want string
-	}{
-		{"example.com", "example.com"},
-		{"example.com:8443", "example.com"},
-		{"[::1]", "[::1]"},
-		{"[::1]:8443", "[::1]"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.host, func(t *testing.T) {
-			assert.Equal(t, tt.want, stripPort(tt.host))
-		})
-	}
+	waf, matched := snapshot.Resolve(identity)
+	require.True(t, matched)
+	assert.Same(t, engineGateway, waf)
 }
 
 func TestSnapshotClose(t *testing.T) {

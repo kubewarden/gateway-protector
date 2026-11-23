@@ -24,15 +24,15 @@ import (
 )
 
 // Server implements the Envoy ext_proc ExternalProcessorServer, running the
-// WAF engine selected by the request's host+path. Engine selection lives
-// entirely in this data-plane process: the processor holds a host+path ->
-// engine routing table built from its own config file (see
-// internal/processor/config.Snapshot.Match), rather than encoding a host
-// inventory in the gateway's per-request expression language, which would
-// need to grow unboundedly as more apps/policies are added.
+// WAF engine selected by the request's identity: the Gateway, listener,
+// route, and rule that agentgateway reports in the ext_proc metadata of
+// each request (see identityFromMetadata). The processor does not work out
+// the route of a request itself: agentgateway has already selected it with
+// the full Gateway API matching rules, and the processor only maps that
+// identity to an engine (see internal/processor/config.Snapshot.Resolve).
 //
 // Server keeps no cross-stream state: an Envoy ext_proc gRPC stream corresponds
-// to a single HTTP request/response, so all per-request state (the Coraza transaction, matched route, etc.)
+// to a single HTTP request/response, so all per-request state (the Coraza transaction, identity, etc.)
 // lives in a local requestState value scoped to that Process() call.
 type Server struct {
 	envoy_service_ext_proc_v3.UnimplementedExternalProcessorServer
@@ -44,7 +44,7 @@ type Server struct {
 // New creates a Server that starts serving with the given Snapshot (nil
 // until the processor has received its first config from the controller -
 // see internal/processor/config.Subscriber). Use SetSnapshot to hot-swap
-// the engines/routes it uses, e.g. after a config push. A nil logger
+// the engines/bindings it uses, e.g. after a config push. A nil logger
 // defaults to [slog.Default].
 func New(initial *config.Snapshot, logger *slog.Logger) *Server {
 	if logger == nil {
@@ -83,14 +83,14 @@ func (s *Server) SetSnapshot(snapshot *config.Snapshot) {
 type requestState struct {
 	// tx is the Coraza transaction for this request, created once the
 	// request headers phase resolves a WAF engine for the request. It
-	// stays nil for requests that don't match any route with a WAF
-	// engine attached.
+	// stays nil for requests that no binding with a WAF engine covers.
 	tx coraza_types.Transaction
 
-	// authority and path are recorded at the request-headers phase for
-	// logging in later phases (e.g. the block response).
+	// authority, path, and identity are recorded at the request-headers
+	// phase for logging in later phases (e.g. the block response).
 	authority string
 	path      string
+	identity  config.Identity
 
 	// requestBody and responseBody track each direction's body stream
 	// across ext_proc messages: whether chunks are being withheld
@@ -226,7 +226,7 @@ func (s *Server) Process(stream envoy_service_ext_proc_v3.ExternalProcessor_Proc
 func (s *Server) handleRequest(ctx context.Context, state *requestState, req *envoy_service_ext_proc_v3.ProcessingRequest) []*envoy_service_ext_proc_v3.ProcessingResponse {
 	switch r := req.GetRequest().(type) {
 	case *envoy_service_ext_proc_v3.ProcessingRequest_RequestHeaders:
-		return s.processRequestHeaders(ctx, state, r.RequestHeaders)
+		return s.processRequestHeaders(ctx, state, r.RequestHeaders, req.GetMetadataContext())
 	case *envoy_service_ext_proc_v3.ProcessingRequest_RequestBody:
 		return s.processRequestBody(ctx, state, r.RequestBody)
 	case *envoy_service_ext_proc_v3.ProcessingRequest_RequestTrailers:

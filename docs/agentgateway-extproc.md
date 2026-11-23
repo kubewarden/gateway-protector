@@ -13,6 +13,24 @@
 > The sections below do not include these changes. As a result, section 4 and
 > the section "Implications for gateway-protector" are out of date on these
 > two points.
+>
+> gateway-protector now uses `metadataContext` with agentgateway v1.7.0. The
+> generated `AgentgatewayPolicy` does not send an engine key. It sends the
+> identity of each request: `proxy.gateway.namespace`, `proxy.gateway.name`,
+> `proxy.listener.name`, `proxy.route.kind`, `proxy.route.namespace`,
+> `proxy.route.name`, and `proxy.route.rule`. The processor maps this identity
+> to an engine, and the table of hosts and paths is gone. See
+> `docs/processor.md` ("Request identity" and "Engine selection"). These
+> facts about agentgateway v1.7.0 were read in its source:
+>
+> - agentgateway sends `metadataContext` on the request headers message in
+>   every body mode (`crates/agentgateway/src/http/ext_proc.rs`).
+> - `proxy.route.rule` is the `name` of the selected `HTTPRoute` rule, and is
+>   absent for a rule without a name. `proxy.listener.name` is the listener
+>   name of the `Gateway` (`controller/pkg/agentgateway/translator`).
+> - A CEL value that is a string arrives as a protobuf string value.
+> - The CRD rule on `extProc` forbids `metadataContext` only together with
+>   `conditional`, not with `backendRef` and `processingOptions`.
 
 This is a research snapshot of how agentgateway wires traffic through an
 `ext_proc` server (like this project's processor), gathered by reading the
@@ -219,7 +237,9 @@ repo-wide convention, not something specific to `extProc`.
 ## Implications for gateway-protector
 
 - **Engine selection by identity is validated end-to-end in the data
-  plane, but gated on a small upstream change.** The reserved
+  plane, but gated on a small upstream change.** (Done: see the status note
+  at the top. The project sends the identity of the request rather than an
+  engine key.) The reserved
   `agentgateway.dev.grpc_initial_metadata` namespace (or a plain
   `metadataContext` entry) would let a generated `AgentgatewayPolicy` carry
   its resolved engine key directly to the processor, eliminating the need
@@ -232,7 +252,8 @@ repo-wide convention, not something specific to `extProc`.
   proto already do the work: only `ExtProc`'s translation into the
   `AgentgatewayPolicy` CRD (surfacing `metadataContext`, and populating it
   in the Go controller) is missing.
-- **Until that lands, the host+path routing table stays.** It's the only
+- **Until that lands, the host+path routing table stays.** (Superseded: the
+  table is removed.) It's the only
   selection mechanism expressible through today's `AgentgatewayPolicy`
   CRD, and the compile-memoization/watch-predicate work already done (see
   `docs/wafpolicy-lifecycle.md`) keeps its cost low even at route counts in

@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/kubewarden/gateway-protector/internal/processor/config"
 )
@@ -76,13 +77,62 @@ func stringHeaderValue(key, value string) *envoy_config_core_v3.HeaderValue {
 	return &envoy_config_core_v3.HeaderValue{Key: key, Value: value}
 }
 
-func requestHeadersMessage(authority, path string) *envoy_service_ext_proc_v3.ProcessingRequest {
+// testIdentity is the identity that requestHeadersMessage and
+// requestHeadersMessageAgentgatewayEncoding send: a request that the
+// "infra/gw" Gateway accepted on its "http" listener and sent to the unnamed
+// rule of the "app/web" HTTPRoute. testBinding binds that Gateway.
+var testIdentity = config.Identity{
+	GatewayNamespace: "infra",
+	GatewayName:      "gw",
+	ListenerName:     "http",
+	RouteKind:        config.KindHTTPRoute,
+	RouteNamespace:   "app",
+	RouteName:        "web",
+}
+
+// testBinding binds the Gateway of testIdentity to engineKey.
+func testBinding(engineKey string) config.Binding {
+	return config.Binding{
+		Kind:      config.KindGateway,
+		Namespace: testIdentity.GatewayNamespace,
+		Name:      testIdentity.GatewayName,
+		WAF:       &config.WAFRef{EngineKey: engineKey},
+	}
+}
+
+// identityMetadata builds the ext_proc metadata that agentgateway sends
+// for a request with the given identity, as the generated
+// AgentgatewayPolicy asks it to (see identityFromMetadata).
+func identityMetadata(id config.Identity) *envoy_config_core_v3.Metadata {
+	return &envoy_config_core_v3.Metadata{
+		FilterMetadata: map[string]*structpb.Struct{
+			config.MetadataNamespace: {Fields: map[string]*structpb.Value{
+				config.MetadataKeyGatewayNamespace: structpb.NewStringValue(id.GatewayNamespace),
+				config.MetadataKeyGatewayName:      structpb.NewStringValue(id.GatewayName),
+				config.MetadataKeyListenerName:     structpb.NewStringValue(id.ListenerName),
+				config.MetadataKeyRouteKind:        structpb.NewStringValue(id.RouteKind),
+				config.MetadataKeyRouteNamespace:   structpb.NewStringValue(id.RouteNamespace),
+				config.MetadataKeyRouteName:        structpb.NewStringValue(id.RouteName),
+				config.MetadataKeyRouteRule:        structpb.NewStringValue(id.RouteRule),
+			}},
+		},
+	}
+}
+
+// requestHeadersMessage builds the request headers message of a GET request
+// for path on example.com, with testIdentity.
+func requestHeadersMessage(path string) *envoy_service_ext_proc_v3.ProcessingRequest {
+	return requestHeadersMessageWithIdentity(path, testIdentity)
+}
+
+func requestHeadersMessageWithIdentity(path string, id config.Identity) *envoy_service_ext_proc_v3.ProcessingRequest {
 	return &envoy_service_ext_proc_v3.ProcessingRequest{
+		MetadataContext: identityMetadata(id),
 		Request: &envoy_service_ext_proc_v3.ProcessingRequest_RequestHeaders{
 			RequestHeaders: &envoy_service_ext_proc_v3.HttpHeaders{
 				Headers: &envoy_config_core_v3.HeaderMap{
 					Headers: []*envoy_config_core_v3.HeaderValue{
-						rawHeaderValue(":authority", authority),
+						rawHeaderValue(":authority", "example.com"),
 						rawHeaderValue(":method", "GET"),
 						rawHeaderValue(":path", path),
 						rawHeaderValue(":scheme", "https"),
@@ -100,11 +150,12 @@ func requestHeadersMessage(authority, path string) *envoy_service_ext_proc_v3.Pr
 // every request look like it was missing pseudo-headers and silently skip
 // the WAF, regardless of what SecRule directives were configured.
 //
-// authority is always "example.com" here (every test config below routes
-// that host to a WAF engine), so it's hardcoded rather than taken as a
-// parameter.
+// authority is always "example.com" and the identity is always
+// testIdentity here (every test config below binds that identity to a WAF
+// engine), so they're hardcoded rather than taken as parameters.
 func requestHeadersMessageAgentgatewayEncoding(path string) *envoy_service_ext_proc_v3.ProcessingRequest {
 	return &envoy_service_ext_proc_v3.ProcessingRequest{
+		MetadataContext: identityMetadata(testIdentity),
 		Request: &envoy_service_ext_proc_v3.ProcessingRequest_RequestHeaders{
 			RequestHeaders: &envoy_service_ext_proc_v3.HttpHeaders{
 				Headers: &envoy_config_core_v3.HeaderMap{
@@ -180,13 +231,12 @@ func assertBlockedResponse(t *testing.T, resp *envoy_service_ext_proc_v3.Process
 
 func TestProcess_CleanRequestContinues(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -196,7 +246,7 @@ func TestProcess_CleanRequestContinues(t *testing.T) {
 	stream, err := client.Process(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/?test=clean")))
+	require.NoError(t, stream.Send(requestHeadersMessage("/?test=clean")))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 
@@ -213,13 +263,12 @@ func TestProcess_CleanRequestContinues(t *testing.T) {
 
 func TestProcess_MaliciousRequestIsBlocked(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -229,7 +278,7 @@ func TestProcess_MaliciousRequestIsBlocked(t *testing.T) {
 	stream, err := client.Process(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/?test=malicious")))
+	require.NoError(t, stream.Send(requestHeadersMessage("/?test=malicious")))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 
@@ -246,13 +295,12 @@ func TestProcess_MaliciousRequestIsBlocked(t *testing.T) {
 // handlers.go's headerValue doc comment for the fix.
 func TestProcess_AgentgatewayPseudoHeaderEncodingIsBlocked(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -286,15 +334,14 @@ func TestProcess_AgentgatewayPseudoHeaderEncodingIsBlocked(t *testing.T) {
 // protocol-enforcement rules.
 func TestProcess_CleanRequestNotBlockedByCoreRuleSetAtDefaultParanoiaLevel(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"crs": "Include @coraza.conf-recommended\n" +
 				"SecRuleEngine On\n" +
 				"Include @crs-setup.conf.example\n" +
 				"Include @owasp_crs/*.conf\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "crs"}},
-		},
+		Bindings: []config.Binding{testBinding("crs")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -332,15 +379,14 @@ func TestProcess_CleanRequestNotBlockedByCoreRuleSetAtDefaultParanoiaLevel(t *te
 // string.
 func TestProcess_BodylessQueryStringAttackBlockedByCoreRuleSet(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"crs": "Include @coraza.conf-recommended\n" +
 				"SecRuleEngine On\n" +
 				"Include @crs-setup.conf.example\n" +
 				"Include @owasp_crs/*.conf\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "crs"}},
-		},
+		Bindings: []config.Binding{testBinding("crs")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -378,13 +424,12 @@ func TestProcess_BodylessQueryStringAttackBlockedByCoreRuleSet(t *testing.T) {
 // processEndOfRequestWithNoBody for the fix.
 func TestProcess_BodylessRequestQueryStringAttackIsBlocked(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:2,deny,status:403"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -419,13 +464,12 @@ func TestProcess_BodylessRequestQueryStringAttackIsBlocked(t *testing.T) {
 // comment.
 func TestProcess_RequestBodyMessageAfterEndOfStreamHeadersIsHarmless(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:2,deny,status:403"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -454,15 +498,14 @@ func TestProcess_RequestBodyMessageAfterEndOfStreamHeadersIsHarmless(t *testing.
 	require.NoError(t, stream.CloseSend())
 }
 
-func TestProcess_UnmatchedRouteContinues(t *testing.T) {
+func TestProcess_UnboundIdentityContinues(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -472,9 +515,11 @@ func TestProcess_UnmatchedRouteContinues(t *testing.T) {
 	stream, err := client.Process(ctx)
 	require.NoError(t, err)
 
-	// unmatched.example.com has no route, so even a "malicious" query
+	// No binding covers the other-gw Gateway, so even a "malicious" query
 	// string must be let through unprotected.
-	require.NoError(t, stream.Send(requestHeadersMessage("unmatched.example.com", "/?test=malicious")))
+	unbound := testIdentity
+	unbound.GatewayName = "other-gw"
+	require.NoError(t, stream.Send(requestHeadersMessageWithIdentity("/?test=malicious", unbound)))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
@@ -486,13 +531,12 @@ func TestProcess_UnmatchedRouteContinues(t *testing.T) {
 // with the correctly-typed CONTINUE.
 func TestProcess_FullRoundTripContinues(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -502,7 +546,7 @@ func TestProcess_FullRoundTripContinues(t *testing.T) {
 	stream, err := client.Process(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/?test=clean")))
+	require.NoError(t, stream.Send(requestHeadersMessage("/?test=clean")))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 	require.IsType(t, &envoy_service_ext_proc_v3.ProcessingResponse_RequestHeaders{}, resp.GetResponse())
@@ -535,13 +579,12 @@ func TestProcess_FullRoundTripContinues(t *testing.T) {
 // population is required for this to work.
 func TestProcess_ResponseHeadersBlocked(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule RESPONSE_STATUS "@streq 500" "id:3000,phase:3,deny,status:403,msg:'response blocked'"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -551,7 +594,7 @@ func TestProcess_ResponseHeadersBlocked(t *testing.T) {
 	stream, err := client.Process(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/")))
+	require.NoError(t, stream.Send(requestHeadersMessage("/")))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
@@ -577,13 +620,12 @@ func TestProcess_ResponseHeadersBlocked(t *testing.T) {
 // could never fire.
 func TestProcess_ResponseHeaderValueBlocked(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule RESPONSE_HEADERS:pass "@rx leak" "id:3100,phase:3,t:lowercase,deny,status:403,msg:'response header blocked'"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -593,7 +635,7 @@ func TestProcess_ResponseHeaderValueBlocked(t *testing.T) {
 	stream, err := client.Process(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/")))
+	require.NoError(t, stream.Send(requestHeadersMessage("/")))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
@@ -620,15 +662,14 @@ func TestProcess_ResponseHeaderValueBlocked(t *testing.T) {
 // silently never ran on real traffic.
 func TestProcess_ResponseBodyBlockedViaMimeType(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				"SecResponseBodyAccess On\n" +
 				"SecResponseBodyMimeType application/json\n" +
 				`SecRule RESPONSE_BODY "@contains malicious" "id:4100,phase:4,deny,status:403,msg:'response body blocked'"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -638,7 +679,7 @@ func TestProcess_ResponseBodyBlockedViaMimeType(t *testing.T) {
 	stream, err := client.Process(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/")))
+	require.NoError(t, stream.Send(requestHeadersMessage("/")))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
@@ -670,15 +711,14 @@ func TestProcess_ResponseBodyBlockedViaMimeType(t *testing.T) {
 // message, carrying the original bytes in streamed_response.
 func TestProcess_CleanInspectableResponseBodyIsReleased(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				"SecResponseBodyAccess On\n" +
 				"SecResponseBodyMimeType application/json\n" +
 				`SecRule RESPONSE_BODY "@contains malicious" "id:4200,phase:4,deny,status:403"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -688,7 +728,7 @@ func TestProcess_CleanInspectableResponseBodyIsReleased(t *testing.T) {
 	stream, err := client.Process(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/")))
+	require.NoError(t, stream.Send(requestHeadersMessage("/")))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
@@ -721,15 +761,14 @@ func TestProcess_CleanInspectableResponseBodyIsReleased(t *testing.T) {
 // test doesn't depend on response header population.
 func TestProcess_ResponseBodyBlocked(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				"SecResponseBodyAccess On\n" +
 				`SecRule RESPONSE_STATUS "@ge 0" "id:3999,phase:3,pass,nolog,ctl:forceResponseBodyVariable=On"` + "\n" +
 				`SecRule RESPONSE_BODY "@contains malicious" "id:4000,phase:4,deny,status:403,msg:'response body blocked'"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client := startTestServer(t, cfg)
 
@@ -739,7 +778,7 @@ func TestProcess_ResponseBodyBlocked(t *testing.T) {
 	stream, err := client.Process(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/")))
+	require.NoError(t, stream.Send(requestHeadersMessage("/")))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
@@ -761,28 +800,26 @@ func TestProcess_ResponseBodyBlocked(t *testing.T) {
 }
 
 // TestServer_SetSnapshot_SwapsActiveSnapshot asserts that a request started
-// after SetSnapshot uses the newly set Snapshot's engine (and routes), not
+// after SetSnapshot uses the newly set Snapshot's engine (and bindings), not
 // the one the Server was created with.
 func TestServer_SetSnapshot_SwapsActiveSnapshot(t *testing.T) {
 	oldCfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"old": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:1,deny,status:403"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "old"}},
-		},
+		Bindings: []config.Binding{testBinding("old")},
 	}
 	client, server := startTestServerWithHandle(t, oldCfg)
 
 	newCfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"new": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq new-malicious" "id:2000,phase:1,deny,status:403"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "new"}},
-		},
+		Bindings: []config.Binding{testBinding("new")},
 	}
 	require.NoError(t, config.Validate(newCfg))
 	newSnapshot, err := config.Compile(newCfg, nil)
@@ -797,7 +834,7 @@ func TestServer_SetSnapshot_SwapsActiveSnapshot(t *testing.T) {
 	require.NoError(t, err)
 
 	// The old engine's rule (id:1000) must no longer trigger...
-	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/?test=malicious")))
+	require.NoError(t, stream.Send(requestHeadersMessage("/?test=malicious")))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
@@ -810,7 +847,7 @@ func TestServer_SetSnapshot_SwapsActiveSnapshot(t *testing.T) {
 	// ...while the new engine's rule (id:2000) does.
 	stream2, err := client.Process(ctx)
 	require.NoError(t, err)
-	require.NoError(t, stream2.Send(requestHeadersMessage("example.com", "/?test=new-malicious")))
+	require.NoError(t, stream2.Send(requestHeadersMessage("/?test=new-malicious")))
 	resp, err = stream2.Recv()
 	require.NoError(t, err)
 	assertBlockedResponse(t, resp, 2000)
@@ -826,13 +863,12 @@ func TestServer_SetSnapshot_SwapsActiveSnapshot(t *testing.T) {
 // completion and asserts it still blocks correctly.
 func TestServer_SetSnapshot_InFlightRequestSurvivesPreviousSnapshotClose(t *testing.T) {
 	cfg := &config.Config{
+		SchemaVersion: config.SchemaVersion,
 		Directives: map[string]string{
 			"blocklist": "SecRuleEngine On\n" +
 				`SecRule ARGS:test "@streq malicious" "id:1000,phase:2,deny,status:403"` + "\n",
 		},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "blocklist"}},
-		},
+		Bindings: []config.Binding{testBinding("blocklist")},
 	}
 	client, server := startTestServerWithHandle(t, cfg)
 
@@ -844,7 +880,7 @@ func TestServer_SetSnapshot_InFlightRequestSurvivesPreviousSnapshotClose(t *test
 
 	// Start the request against the Server's initial Snapshot; this
 	// creates a Coraza transaction bound to its "blocklist" engine.
-	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/?test=malicious")))
+	require.NoError(t, stream.Send(requestHeadersMessage("/?test=malicious")))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 	assert.Equal(t, envoy_service_ext_proc_v3.CommonResponse_CONTINUE, resp.GetRequestHeaders().GetResponse().GetStatus())
@@ -853,9 +889,10 @@ func TestServer_SetSnapshot_InFlightRequestSurvivesPreviousSnapshotClose(t *test
 	// this closes the original Snapshot's "blocklist" engine (the one the
 	// in-flight stream's transaction was created from).
 	otherCfg := &config.Config{
-		Directives: map[string]string{"noop": "SecRuleEngine On\n"},
-		Routes: []config.Route{
-			{Host: "other.example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "noop"}},
+		SchemaVersion: config.SchemaVersion,
+		Directives:    map[string]string{"noop": "SecRuleEngine On\n"},
+		Bindings: []config.Binding{
+			{Kind: config.KindGateway, Namespace: "infra", Name: "other-gw", WAF: &config.WAFRef{EngineKey: "noop"}},
 		},
 	}
 	require.NoError(t, config.Validate(otherCfg))
@@ -881,10 +918,9 @@ func TestServer_SetSnapshot_NilAndRepeatedCallsAreSafe(t *testing.T) {
 	server := New(nil, nil)
 
 	cfg := &config.Config{
-		Directives: map[string]string{"noop": "SecRuleEngine On\n"},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "noop"}},
-		},
+		SchemaVersion: config.SchemaVersion,
+		Directives:    map[string]string{"noop": "SecRuleEngine On\n"},
+		Bindings:      []config.Binding{testBinding("noop")},
 	}
 	require.NoError(t, config.Validate(cfg))
 	snapshot, err := config.Compile(cfg, nil)

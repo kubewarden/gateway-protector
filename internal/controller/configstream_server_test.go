@@ -10,7 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	configstreamv1 "github.com/kubewarden/gateway-protector/internal/configstream/v1"
@@ -20,7 +22,7 @@ import (
 const configStreamBufSize = 1024 * 1024
 
 // testSnapshot builds a ConfigSnapshot carrying a realistic processor
-// config (an engine plus a route referencing it, keyed off version so
+// config (an engine plus a binding referencing it, keyed off version so
 // different versions produce genuinely different payloads) rather than a
 // placeholder string. ConfigServer itself treats ConfigJson as opaque
 // bytes - parsing/validation happen subscriber-side, see
@@ -32,9 +34,10 @@ func testSnapshot(t *testing.T, version string) *configstreamv1.ConfigSnapshot {
 
 	engineKey := "engine-" + version
 	cfg := &procconfig.Config{
-		Directives: map[string]string{engineKey: "SecRuleEngine On"},
-		Routes: []procconfig.Route{
-			{Host: version + ".example.com", PathPrefix: "/", WAF: &procconfig.WAFRef{EngineKey: engineKey}},
+		SchemaVersion: procconfig.SchemaVersion,
+		Directives:    map[string]string{engineKey: "SecRuleEngine On"},
+		Bindings: []procconfig.Binding{
+			{Kind: procconfig.KindGateway, Namespace: "infra", Name: version + "-gw", WAF: &procconfig.WAFRef{EngineKey: engineKey}},
 		},
 	}
 
@@ -70,8 +73,15 @@ func startTestConfigServer(t *testing.T) (configstreamv1.ConfigStreamServiceClie
 }
 
 // subscribe opens a StreamConfig call and sends the initial Subscribe
-// message, returning the stream.
+// message, announcing the config schema version this controller publishes,
+// returning the stream.
 func subscribe(ctx context.Context, t *testing.T, client configstreamv1.ConfigStreamServiceClient, id string) configstreamv1.ConfigStreamService_StreamConfigClient {
+	t.Helper()
+
+	return subscribeWithSchemaVersion(ctx, t, client, id, procconfig.SchemaVersion)
+}
+
+func subscribeWithSchemaVersion(ctx context.Context, t *testing.T, client configstreamv1.ConfigStreamServiceClient, id string, schemaVersion uint32) configstreamv1.ConfigStreamService_StreamConfigClient {
 	t.Helper()
 
 	stream, err := client.StreamConfig(ctx)
@@ -79,7 +89,7 @@ func subscribe(ctx context.Context, t *testing.T, client configstreamv1.ConfigSt
 
 	err = stream.Send(&configstreamv1.StreamConfigRequest{
 		Message: &configstreamv1.StreamConfigRequest_Subscribe{
-			Subscribe: &configstreamv1.Subscribe{SubscriberId: id},
+			Subscribe: &configstreamv1.Subscribe{SubscriberId: id, SchemaVersion: schemaVersion},
 		},
 	})
 	require.NoError(t, err)
@@ -103,6 +113,32 @@ func TestConfigServerPushesLatestOnSubscribe(t *testing.T) {
 	snapshot := resp.GetSnapshot()
 	assert.Equal(t, "v1", snapshot.GetVersion())
 	assert.JSONEq(t, string(want.GetConfigJson()), string(snapshot.GetConfigJson()))
+}
+
+// TestConfigServerRejectsSubscriberOfAnotherSchemaVersion pins that a
+// processor of another version, including one that predates the schema
+// version field (0), never receives a config it would misread: its stream
+// ends with FailedPrecondition before any snapshot is sent, and it is not
+// registered for later publishes.
+func TestConfigServerRejectsSubscriberOfAnotherSchemaVersion(t *testing.T) {
+	for _, schemaVersion := range []uint32{0, procconfig.SchemaVersion + 1} {
+		client, server := startTestConfigServer(t)
+		server.Publish(testSnapshot(t, "v1"))
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+		stream := subscribeWithSchemaVersion(ctx, t, client, "old-replica", schemaVersion)
+
+		_, err := stream.Recv()
+		require.Error(t, err)
+		assert.Equal(t, codes.FailedPrecondition, status.Code(err), "schema version %d", schemaVersion)
+
+		server.mu.Lock()
+		assert.Empty(t, server.subscribers, "schema version %d", schemaVersion)
+		server.mu.Unlock()
+
+		cancel()
+	}
 }
 
 func TestConfigServerPushesOnPublishAfterSubscribe(t *testing.T) {

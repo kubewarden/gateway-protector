@@ -26,19 +26,18 @@ type Input struct {
 	// namespace+name when resolving a policy's spec.customRulesRefs.
 	RuleSets []*gwpv1alpha1.WAFRuleSet
 
-	// Gateways and HTTPRoutes are every such object in the cluster, used to
-	// resolve which routes a Gateway-level policy covers and to fall back
-	// to a listener's hostname when a route declares none (see routeHosts).
-	Gateways   []*gatewayv1.Gateway
+	// HTTPRoutes is every HTTPRoute in the cluster, used to decide which
+	// routes need wiring (see candidatePolicies). It never changes the
+	// published Config.
 	HTTPRoutes []*gatewayv1.HTTPRoute
 }
 
 // PolicyResult reports the outcome of trying to include one Accepted
 // WAFPolicy in the built config: either it compiled successfully (Err is
-// nil; RouteCount is how many host+path entries in the result reference its
-// engine, possibly zero if it currently protects no route) or its composed
-// directives failed to compile (Err is non-nil; the policy - and everything
-// it would have covered - is excluded from the result).
+// nil; RouteCount is how many wired HTTPRoutes it can apply to, possibly
+// zero if it currently protects no route) or its composed directives failed
+// to compile (Err is non-nil; the policy's binding has no engine, and every
+// request that resolves to it continues uninspected).
 type PolicyResult struct {
 	Policy     *gwpv1alpha1.WAFPolicy
 	RouteCount int
@@ -48,8 +47,8 @@ type PolicyResult struct {
 // BuildResult is everything one Build pass produces.
 type BuildResult struct {
 	// Config is the processor's data-plane config to publish: one
-	// directive block per distinct rendered engine, and the host+path
-	// routing table selecting one per HTTPRoute rule.
+	// directive block per distinct rendered engine, and one binding per
+	// Accepted policy attaching its engine to the policy's target.
 	Config *procconfig.Config
 
 	// PolicyResults reports, for every policy in Build's input, whether it
@@ -57,10 +56,10 @@ type BuildResult struct {
 	// compile (see PolicyResult).
 	PolicyResults []PolicyResult
 
-	// Wiring is one entry per HTTPRoute with at least one successfully
-	// covered rule: the ext_proc attachment that route needs in the
-	// gateway (see internal/controller's generation of AgentgatewayPolicy
-	// objects from this).
+	// Wiring is one entry per HTTPRoute that at least one successfully
+	// compiled policy can apply to: the ext_proc attachment that route
+	// needs in the gateway (see internal/controller's generation of
+	// AgentgatewayPolicy objects from this).
 	Wiring []RouteWiring
 }
 
@@ -96,22 +95,29 @@ func CorazaDryCompile(engineKey, directives string) error {
 }
 
 // Build renders a procconfig.Config from input: one directive block per
-// distinct rendered engine (deduplicated by EngineKey) and the host+path
-// routing table selecting one per HTTPRoute rule (see
-// effectivePolicyForRule and routeHosts/rulePaths). compile dry-compiles
-// each new engine's directives before it is included in the result.
+// distinct rendered engine (deduplicated by EngineKey) and one binding per
+// Accepted policy, attaching the policy's engine to its spec.targetRef.
+// compile dry-compiles each new engine's directives before it is included
+// in the result.
+//
+// The published Config depends only on policies and rule sets, never on
+// HTTPRoutes: the processor selects a binding from the identity that
+// agentgateway reports for each request (see procconfig.Snapshot.Resolve),
+// so it needs no inventory of hosts and paths. HTTPRoutes only decide the
+// wiring (see candidatePolicies).
 //
 // Build never returns an error itself: a policy whose directives fail to
-// compile is reported via its PolicyResult.Err and simply excluded from the
-// returned Config - and from covering any route or producing any wiring -
-// rather than failing the whole build (see docs/wafpolicy-lifecycle.md).
+// compile is reported via its PolicyResult.Err, and its binding is
+// published without an engine - so requests that resolve to it continue
+// uninspected instead of falling back to a less specific policy - rather
+// than failing the whole build (see docs/wafpolicy-lifecycle.md).
 //
-// Build's Config.Routes is canonically ordered (sorted by host, then
-// pathPrefix, then engine key) regardless of input.HTTPRoutes' own order:
-// that order follows the controller-runtime cache's List, which is
+// Build's Config.Bindings is canonically ordered (sorted by kind, then
+// namespace, name, and sectionName) regardless of input.Policies' own
+// order: that order follows the controller-runtime cache's List, which is
 // documented to be arbitrary (client-go's underlying store is map-backed),
-// so two Build calls over identical accepted-policy/route state could
-// otherwise render byte-different (but logically identical) Config values.
+// so two Build calls over identical accepted-policy state could otherwise
+// render byte-different (but logically identical) Config values.
 // GRPCPublisher.Publish hashes the rendered JSON to decide whether a config
 // push is a no-op, so this ordering guarantee is what keeps that hash
 // stable across reconciles that didn't actually change anything - without
@@ -119,7 +125,6 @@ func CorazaDryCompile(engineKey, directives string) error {
 // processor replica to needlessly recompile all its engines.
 func Build(input Input, compile DryCompiler) BuildResult {
 	ruleSetIndex := indexRuleSets(input.RuleSets)
-	gatewayIndex := indexGateways(input.Gateways)
 	policyIdx := newPolicyIndex(input.Policies)
 
 	directives := make(map[string]string)
@@ -152,125 +157,96 @@ func Build(input Input, compile DryCompiler) BuildResult {
 		engineKeyByPolicy[policy] = engineKey
 	}
 
-	routes, wiring := buildRoutes(input.HTTPRoutes, policyIdx, gatewayIndex, engineKeyByPolicy, resultByPolicy)
-	sortRoutes(routes)
-
 	return BuildResult{
-		Config:        &procconfig.Config{Directives: directives, Routes: routes},
+		Config: &procconfig.Config{
+			SchemaVersion: procconfig.SchemaVersion,
+			Directives:    directives,
+			Bindings:      buildBindings(policyIdx, engineKeyByPolicy),
+		},
 		PolicyResults: results,
-		Wiring:        wiring,
+		Wiring:        buildWiring(input.HTTPRoutes, policyIdx, engineKeyByPolicy, resultByPolicy),
 	}
 }
 
-// sortRoutes sorts routes in place by (Host, PathPrefix, engine key), the
-// canonical order Build's doc comment documents as an invariant. Route's
-// only fields are Host, PathPrefix, and WAF.EngineKey, so two routes that
-// compare equal on all three are indistinguishable - a plain (non-stable)
-// sort is enough.
-func sortRoutes(routes []procconfig.Route) {
-	sort.Slice(routes, func(i, j int) bool {
-		if routes[i].Host != routes[j].Host {
-			return routes[i].Host < routes[j].Host
+// buildBindings returns one binding per indexed policy, in the canonical
+// order Build's doc comment documents as an invariant. A policy without an
+// engine key (its directives failed to compile) gets a binding without an
+// engine (see procconfig.Binding.WAF).
+func buildBindings(policyIdx *policyIndex, engineKeyByPolicy map[*gwpv1alpha1.WAFPolicy]string) []procconfig.Binding {
+	bindings := make([]procconfig.Binding, 0, len(policyIdx.byPoint))
+
+	for point, policy := range policyIdx.byPoint {
+		binding := procconfig.Binding{
+			Kind:        point.Kind,
+			Namespace:   point.Namespace,
+			Name:        point.Name,
+			SectionName: point.SectionName,
 		}
-		if routes[i].PathPrefix != routes[j].PathPrefix {
-			return routes[i].PathPrefix < routes[j].PathPrefix
+
+		if engineKey, compiled := engineKeyByPolicy[policy]; compiled {
+			binding.WAF = &procconfig.WAFRef{EngineKey: engineKey}
 		}
-		return routeEngineKey(routes[i]) < routeEngineKey(routes[j])
+
+		bindings = append(bindings, binding)
+	}
+
+	// Attachment points are unique, so (kind, namespace, name,
+	// sectionName) is a total order and a plain (non-stable) sort is
+	// enough.
+	sort.Slice(bindings, func(i, j int) bool {
+		a, b := bindings[i], bindings[j]
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		if a.Namespace != b.Namespace {
+			return a.Namespace < b.Namespace
+		}
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+
+		return a.SectionName < b.SectionName
 	})
+
+	return bindings
 }
 
-// routeEngineKey returns route's engine key, or "" if it has no WAF engine
-// attached (see procconfig.Route.WAF's doc comment).
-func routeEngineKey(route procconfig.Route) string {
-	if route.WAF == nil {
-		return ""
-	}
-
-	return route.WAF.EngineKey
-}
-
-func buildRoutes(
+// buildWiring returns one RouteWiring per HTTPRoute that at least one
+// successfully compiled policy can apply to (see candidatePolicies), and
+// counts that route in each such policy's RouteCount. A candidate whose
+// directives failed to compile neither wires the route nor contributes
+// body needs: the processor runs no engine for it.
+func buildWiring(
 	httpRoutes []*gatewayv1.HTTPRoute,
 	policyIdx *policyIndex,
-	gatewayIndex map[types.NamespacedName]*gatewayv1.Gateway,
 	engineKeyByPolicy map[*gwpv1alpha1.WAFPolicy]string,
 	resultByPolicy map[*gwpv1alpha1.WAFPolicy]*PolicyResult,
-) ([]procconfig.Route, []RouteWiring) {
-	var routes []procconfig.Route
-
+) []RouteWiring {
 	var wiring []RouteWiring
 
 	for _, route := range httpRoutes {
-		entries, routeWiring := buildRouteEntries(route, policyIdx, gatewayIndex, engineKeyByPolicy, resultByPolicy)
-		if routeWiring == nil {
-			continue
-		}
+		var routeWiring *RouteWiring
 
-		routes = append(routes, entries...)
-		wiring = append(wiring, *routeWiring)
-	}
-
-	return routes, wiring
-}
-
-// buildRouteEntries computes one HTTPRoute's contribution to the routing
-// table and its wiring needs. It returns a nil RouteWiring when no rule of
-// the route is (successfully) covered by any policy - covered is otherwise
-// equivalent to "the route needs wiring" so no separate bool is needed.
-// Note entries can be empty even for a covered route (e.g. a rule whose
-// only path matches are RegularExpression, which the prefix-based table
-// cannot represent), so entries' emptiness cannot be used as that signal.
-func buildRouteEntries(
-	route *gatewayv1.HTTPRoute,
-	policyIdx *policyIndex,
-	gatewayIndex map[types.NamespacedName]*gatewayv1.Gateway,
-	engineKeyByPolicy map[*gwpv1alpha1.WAFPolicy]string,
-	resultByPolicy map[*gwpv1alpha1.WAFPolicy]*PolicyResult,
-) ([]procconfig.Route, *RouteWiring) {
-	var entries []procconfig.Route
-
-	var wiring *RouteWiring
-
-	for r := range route.Spec.Rules {
-		rule := &route.Spec.Rules[r]
-
-		policy := effectivePolicyForRule(policyIdx, route, rule)
-		if policy == nil {
-			continue
-		}
-
-		engineKey, ok := engineKeyByPolicy[policy]
-		if !ok {
-			// The policy that would cover this rule failed to compile;
-			// leave the rule with no entry (unprotected) rather than
-			// silently falling back to a different policy.
-			continue
-		}
-
-		if wiring == nil {
-			wiring = &RouteWiring{Route: route}
-		}
-
-		wiring.NeedRequestBody = wiring.NeedRequestBody || policyNeedsRequestBody(policy)
-		wiring.NeedResponseBody = wiring.NeedResponseBody || policyNeedsResponseBody(policy)
-
-		hosts := routeHosts(route, gatewayIndex)
-		paths := rulePaths(rule)
-		result := resultByPolicy[policy]
-
-		for _, host := range hosts {
-			for _, path := range paths {
-				entries = append(entries, procconfig.Route{
-					Host:       host,
-					PathPrefix: path,
-					WAF:        &procconfig.WAFRef{EngineKey: engineKey},
-				})
-				result.RouteCount++
+		for policy := range candidatePolicies(policyIdx, route) {
+			if _, compiled := engineKeyByPolicy[policy]; !compiled {
+				continue
 			}
+
+			if routeWiring == nil {
+				routeWiring = &RouteWiring{Route: route}
+			}
+
+			routeWiring.NeedRequestBody = routeWiring.NeedRequestBody || policyNeedsRequestBody(policy)
+			routeWiring.NeedResponseBody = routeWiring.NeedResponseBody || policyNeedsResponseBody(policy)
+			resultByPolicy[policy].RouteCount++
+		}
+
+		if routeWiring != nil {
+			wiring = append(wiring, *routeWiring)
 		}
 	}
 
-	return entries, wiring
+	return wiring
 }
 
 func indexRuleSets(ruleSets []*gwpv1alpha1.WAFRuleSet) map[types.NamespacedName]*gwpv1alpha1.WAFRuleSet {

@@ -8,26 +8,26 @@ import (
 
 // RouteWiring describes the ext_proc wiring one protected HTTPRoute needs:
 // which route to attach a generated AgentgatewayPolicy to, and which body
-// phases the route's effective engines actually inspect (the union across
-// every covered rule, so a route where only one rule needs request bodies
-// still buffers them for all - agentgateway wiring is per-route, engine
-// selection per-rule stays the processor's host+path table's job).
+// phases the policies that can apply to the route actually inspect (the
+// union across every candidate policy, so a route where only one rule needs
+// request bodies still buffers them for all - agentgateway wiring is
+// per-route, while the processor selects the engine per request from the
+// identity agentgateway reports).
 //
 // A route covered only by mode: Off policies is still wired: its traffic
-// flows through ext_proc and matches the explicit "off" engine (see
-// offEngineDirectives), keeping the invariant that every route with an
-// entry in the published table is actually reachable by the processor.
+// flows through ext_proc and resolves to the explicit "off" engine (see
+// offEngineDirectives), so the opt-out stays visible to the processor.
 type RouteWiring struct {
 	// Route is the HTTPRoute the generated AgentgatewayPolicy must target
 	// (and live in the namespace of, and be owned by).
 	Route *gatewayv1.HTTPRoute
 
-	// NeedRequestBody reports whether any covered rule's effective policy
-	// inspects request bodies.
+	// NeedRequestBody reports whether any policy that can apply to the
+	// route inspects request bodies.
 	NeedRequestBody bool
 
-	// NeedResponseBody reports whether any covered rule's effective policy
-	// inspects response bodies.
+	// NeedResponseBody reports whether any policy that can apply to the
+	// route inspects response bodies.
 	NeedResponseBody bool
 }
 

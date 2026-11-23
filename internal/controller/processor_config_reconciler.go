@@ -29,7 +29,7 @@ import (
 // processorConfigSingletonKey is the single, fixed reconcile.Request every
 // ProcessorConfigReconciler.Reconcile call uses: the processor's data-plane
 // config is one global artifact derived from every Accepted WAFPolicy plus
-// the Gateway/HTTPRoute objects they attach to, not a per-object one, so
+// the HTTPRoute objects they can apply to, not a per-object one, so
 // there is no natural "which object changed" request to key it by. Every
 // watch this reconciler registers (see SetupWithManager) maps its event to
 // this same key.
@@ -43,10 +43,13 @@ var processorConfigSingletonKey = types.NamespacedName{Name: "processor-config"}
 //
 // This is a singleton: unlike WAFPolicyReconciler, which reconciles one
 // WAFPolicy per call, every event this reconciler watches - a WAFPolicy,
-// WAFRuleSet, Gateway, or HTTPRoute change - re-triggers the same one
-// reconcile of the entire config, since any of those objects can change
-// which routes are covered or how. See docs/wafpolicy-lifecycle.md for the
-// role this plays in the WAFPolicy lifecycle.
+// WAFRuleSet, or HTTPRoute change - re-triggers the same one reconcile of
+// the entire config, since any of those objects can change which engines
+// are published or which routes are wired. A Gateway change needs no watch
+// here: the build never reads Gateways, and a change that affects a
+// WAFPolicy's target reaches this reconciler as a change of the policy's
+// Accepted condition. See docs/wafpolicy-lifecycle.md for the role this
+// plays in the WAFPolicy lifecycle.
 //
 // Dry-compiling every distinct engine on every single reconcile would
 // scale poorly once routes number in the thousands (Coraza's compile step
@@ -75,7 +78,7 @@ type ProcessorConfigReconciler struct {
 // +kubebuilder:rbac:groups=gateway-protector.kubewarden.io,resources=wafpolicies,verbs=get;list;watch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=gateway-protector.kubewarden.io,resources=wafpolicies/status,verbs=get;update;patch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=gateway-protector.kubewarden.io,resources=wafrulesets,verbs=get;list;watch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;httproutes,verbs=get;list;watch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 // +kubebuilder:rbac:groups=agentgateway.dev,resources=agentgatewaypolicies,verbs=get;list;watch;create;update;patch;delete,roleName=`{{ include "gateway-protector.fullname" . }}-controller`
 
 // Reconcile rebuilds the processor's data-plane config from every
@@ -91,10 +94,10 @@ type ProcessorConfigReconciler struct {
 //     live, simply unused for now)
 //   - Programmed=False/CompileFailed if its composed directives (embedded
 //     Core Rule Set + paranoiaLevel + anomalyThreshold + exclusions +
-//     referenced WAFRuleSet.spec.rules) fail to compile; that policy - and
-//     every route it would have covered - is excluded from the published
-//     config, and its routes from the generated wiring, rather than
-//     blocking every other policy's config from being published
+//     referenced WAFRuleSet.spec.rules) fail to compile; that policy's
+//     binding is published without an engine - so every request that
+//     resolves to it continues uninspected - and it wires no route, rather
+//     than blocking every other policy's config from being published
 //
 // Programmed is otherwise left untouched here: a WAFPolicy that isn't
 // Accepted keeps whatever Programmed=False/Pending WAFPolicyReconciler set
@@ -112,11 +115,6 @@ func (r *ProcessorConfigReconciler) Reconcile(ctx context.Context, _ ctrl.Reques
 		return ctrl.Result{}, fmt.Errorf("failed to list WAFRuleSets: %w", err)
 	}
 
-	var gatewayList gatewayv1.GatewayList
-	if err := r.List(ctx, &gatewayList); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to list Gateways: %w", err)
-	}
-
 	var httpRouteList gatewayv1.HTTPRouteList
 	if err := r.List(ctx, &httpRouteList); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list HTTPRoutes: %w", err)
@@ -125,7 +123,6 @@ func (r *ProcessorConfigReconciler) Reconcile(ctx context.Context, _ ctrl.Reques
 	input := processorconfig.Input{
 		Policies:   acceptedPolicies(policyList.Items),
 		RuleSets:   toPointerSlice(ruleSetList.Items),
-		Gateways:   toPointerSlice(gatewayList.Items),
 		HTTPRoutes: toPointerSlice(httpRouteList.Items),
 	}
 
@@ -264,7 +261,7 @@ func (r *ProcessorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// primeCh feeds a single synthetic event into this controller's own
 	// workqueue once the manager's cache has synced, so the very first
 	// reconcile - which must run even with zero
-	// WAFPolicy/WAFRuleSet/Gateway/HTTPRoute objects, so the processor
+	// WAFPolicy/WAFRuleSet/HTTPRoute objects, so the processor
 	// config stream has its inert default to push as soon as a processor
 	// subscribes - is triggered through the exact same serialized queue as
 	// every watch-driven reconcile, rather than calling Reconcile directly
@@ -287,8 +284,6 @@ func (r *ProcessorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&gwpv1alpha1.WAFPolicy{}, handler.EnqueueRequestsFromMapFunc(enqueueProcessorConfig),
 			builder.WithPredicates(wafPolicyRelevantChangePredicate)).
 		Watches(&gwpv1alpha1.WAFRuleSet{}, handler.EnqueueRequestsFromMapFunc(enqueueProcessorConfig),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(enqueueProcessorConfig),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&gatewayv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(enqueueProcessorConfig),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).

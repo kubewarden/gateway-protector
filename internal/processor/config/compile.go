@@ -54,7 +54,7 @@ func WithMatchedRuleWriter(w io.Writer) CompileOption {
 }
 
 // Compile builds one coraza.WAF engine per entry in cfg.Directives, keyed by
-// the same engine key, and returns a Snapshot combining them with cfg.Routes.
+// the same engine key, and returns a Snapshot combining them with cfg.Bindings.
 // The caller is expected to have already run Validate. Matched-rule logging
 // is written to logger; a nil logger defaults to [slog.Default]. See
 // CompileOption for optional behavior (e.g. WithMatchedRuleWriter).
@@ -105,7 +105,7 @@ func Compile(cfg *Config, logger *slog.Logger, opts ...CompileOption) (*Snapshot
 		engines[engineKey] = waf
 	}
 
-	return newSnapshot(engines, cfg.Routes), nil
+	return newSnapshot(engines, cfg.Bindings), nil
 }
 
 // syncWriter serializes concurrent writes to w: multiple engines (and,

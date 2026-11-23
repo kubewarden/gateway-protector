@@ -50,12 +50,18 @@ message StreamConfigResponse {
 }
 
 // Subscribe must be the first message a subscriber sends on the stream. It
-// identifies the subscriber for the controller's logs/metrics; it carries no
-// data needed for correctness.
+// identifies the subscriber for the controller's logs/metrics, and announces
+// the config schema version the subscriber accepts.
 message Subscribe {
   // subscriber_id identifies the connecting processor replica, e.g. its pod
   // name, for logging and metrics only.
   string subscriber_id = 1;
+  // schema_version is the internal/processor/config.Config schema version
+  // (internal/processor/config.SchemaVersion) the subscriber accepts. The
+  // controller ends the stream with FAILED_PRECONDITION, without sending
+  // any config, when this differs from its own schema version. A
+  // subscriber that predates this field sends 0.
+  uint32 schema_version = 2;
 }
 
 // ConfigAck reports whether a subscriber applied a given ConfigSnapshot.

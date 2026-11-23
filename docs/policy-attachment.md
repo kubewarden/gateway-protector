@@ -1,20 +1,41 @@
 # Policy attachment: how a WAFPolicy matches traffic
 
 This document is the deep dive on **which `WAFPolicy` governs a given piece of
-traffic**, and how that decision becomes the processor's host+path routing
-table. See [`docs/wafpolicy-lifecycle.md`](wafpolicy-lifecycle.md) for the
-`WAFPolicy` object's own lifecycle (Accepted/Programmed conditions,
-conflicts, re-evaluation triggers) and
-[`docs/processor.md`](processor.md#matching-semantics) for how the processor
-matches an *incoming request* against the table this document describes how
-to build.
+traffic**, and how that decision reaches the processor. See
+[`docs/wafpolicy-lifecycle.md`](wafpolicy-lifecycle.md) for the `WAFPolicy`
+object's own lifecycle (Accepted/Programmed conditions, conflicts,
+re-evaluation triggers) and
+[`docs/processor.md`](processor.md#engine-selection) for the request-time
+details of engine selection.
 
-Everything here is implemented by
-`internal/controller/processorconfig/table.go`, called from
-`processorconfig.Build` while [Programming](wafpolicy-lifecycle.md#3-programming-implemented)
-runs. It is pure, in-memory logic: no admission-time equivalent exists (see
-that doc's notes on why cross-object resolution belongs to the reconciler,
-not admission).
+The decision is split between two components:
+
+- **agentgateway** selects the route and the rule of each request with the
+  full Gateway API matching rules (hostnames, path matches, header, query
+  parameter, and method matches), and reports the Gateway, the listener, the
+  route, and the rule to the processor (see
+  [Request identity](processor.md#request-identity)).
+- **The processor** maps that identity to the `WAFPolicy` that governs it,
+  with the precedence below (`Snapshot.Resolve` in
+  `internal/processor/config/snapshot.go`).
+
+The controller prepares the two sides. Its code is `processorconfig.Build`
+in `internal/controller/processorconfig`, and it runs in the
+[Programming](wafpolicy-lifecycle.md#3-programming-implemented) step. The
+controller does two things:
+
+- It publishes one binding for each Accepted `WAFPolicy`. A binding connects
+  the target of the policy to the engine that the controller compiled from
+  the policy.
+- It generates one `AgentgatewayPolicy` for each route that a policy can
+  apply to. This object makes agentgateway send the traffic of the route,
+  and the identity of each request, to the processor.
+
+The controller never works out the hosts or the paths of a route. This code
+does not call the Kubernetes API: the reconciler gives it the objects. No
+admission check runs this logic when you apply a policy, because the result
+depends on other objects that can change later. See
+[Why validation is split between admission and the reconciler](wafpolicy-lifecycle.md#why-validation-is-split-between-admission-and-the-reconciler).
 
 ## Attachment basics
 
@@ -24,32 +45,39 @@ rule (`HTTPRoute`) via `sectionName`. Four attachment shapes are possible:
 
 | `targetRef.kind` | `sectionName` | Scope |
 | --- | --- | --- |
-| `Gateway` | unset | Default for every route attached to this Gateway |
-| `Gateway` | a listener name | Default for routes attached to that one listener |
-| `HTTPRoute` | unset | Overrides the Gateway default for this route, every rule |
+| `Gateway` | unset | Default for every request this Gateway accepts |
+| `Gateway` | a listener name | Default for every request this listener accepts |
+| `HTTPRoute` | unset | Overrides the Gateway defaults for this route, every rule |
 | `HTTPRoute` | a rule name | Overrides everything else for that one rule only |
 
 Resolution across these is **most-specific-wins, full replacement, never
-merging** - see [Which policy governs a rule](#which-policy-governs-a-rule)
+merging** - see [Which policy governs a request](#which-policy-governs-a-request)
 below for the exact order. `examples/route-override/` has one worked manifest
 per common scenario (`gateway-default.yaml`, `route-override.yaml`,
 `route-opt-out.yaml`).
 
-## Which policy governs a rule
+## Which policy governs a request
 
-`effectivePolicyForRule` resolves the one `WAFPolicy` that governs a single
-`HTTPRoute` rule by trying four levels, most to least specific, and stopping
-at the first match:
+The processor resolves the one `WAFPolicy` that governs a request by trying
+four levels, most to least specific, and stopping at the first match:
 
 | Order | Attachment | Matches |
 | --- | --- | --- |
-| 1 | `HTTPRoute` + `sectionName` | This exact rule (only possible when the rule has a `name`) |
-| 2 | `HTTPRoute`, no `sectionName` | Every rule on this route not covered by (1) |
-| 3 | `Gateway` + `sectionName` | Routes attached to that specific listener (`sectionName` matches the `parentRef`'s `sectionName`) |
-| 4 | `Gateway`, no `sectionName` | Every route attached to this Gateway not covered by (1)-(3) |
+| 1 | `HTTPRoute` + `sectionName` | Requests that agentgateway sends to this exact rule (only possible when the rule has a `name`) |
+| 2 | `HTTPRoute`, no `sectionName` | Requests to every rule of this route not covered by (1) |
+| 3 | `Gateway` + `sectionName` | Requests that this listener accepts, not covered by (1)-(2) |
+| 4 | `Gateway`, no `sectionName` | Requests that this Gateway accepts, not covered by (1)-(3) |
 
-A rule with no match at any level is unprotected - not an error, simply no
+A request with no match at any level is unprotected - not an error, simply no
 `WAFPolicy` currently applies to it.
+
+The rule and the listener are the ones agentgateway selected for the request.
+For example, with a rule `health` that matches `PathPrefix /health` and an
+unnamed catch-all rule, a policy on `health` covers `/health/live` but not
+`/healthz-admin`: agentgateway sends `/healthz-admin` to the catch-all rule,
+because a `PathPrefix` matches whole path segments. In the same way, a policy
+on a rule that also matches a header covers only the requests that carry the
+header.
 
 Given a Gateway-level default and a route-level override:
 
@@ -76,55 +104,45 @@ instead, in full - the two are never combined.
 ### Multiple parentRefs
 
 An `HTTPRoute` can list more than one `parentRef` (attached to more than one
-`Gateway`, or the same `Gateway` on two listeners). Levels 3-4 above are
-tried against each `parentRef` **in `spec.parentRefs` list order**, and the
-first one that produces any Gateway-level match wins - not one match "per
-parent". A route attached to two Gateways with conflicting defaults for the
-same rule is therefore resolved deterministically, but not with full
-per-listener fidelity (a documented simplification; see the multi-parent-routes
-open question in the project's design notes).
+`Gateway`, or the same `Gateway` on two listeners). Each request gets the
+Gateway-level policy (levels 3-4 above) of the Gateway and listener that
+actually accepted it: a route attached to a public Gateway with a `Blocking`
+default and to an internal Gateway with an `Off` default is blocked through
+the public Gateway and not inspected through the internal one.
 
-## From policy to routing table
+The same holds for two separate routes for the same hostname, one per
+Gateway: each Gateway's traffic gets that Gateway's policy.
 
-Once a rule's governing policy is known, it still has to become a `host` +
-`pathPrefix` entry in the processor's table (see
-[`docs/processor.md`](processor.md#configuration) for the table's shape).
-That requires resolving *which hostnames* and *which paths* the rule
-actually covers. (Separately, every route with at least one covered rule
-also gets a generated `AgentgatewayPolicy` wiring its traffic through the
-processor - see
-[`docs/wafpolicy-lifecycle.md` §4](wafpolicy-lifecycle.md#4-gateway-wiring-implemented).)
+### Listener policies
 
-### Hostnames (`routeHosts`)
+A listener policy (level 3) applies to every request that its listener
+accepts, whether the route's `parentRef` names that listener in `sectionName`
+or names no listener at all. A `parentRef` that names another listener of the
+same Gateway never receives traffic through this listener, so the policy
+never applies to it.
 
-Tried in order, stopping at the first that applies:
+## From policy to the processor
 
-1. the route's own `spec.hostnames`, if it declares any;
-2. otherwise, the hostname of the specific listener named by the route's
-   `parentRef.sectionName` (or `"*"` if that listener has no `hostname`);
-3. otherwise, if the referenced `Gateway` has exactly **one** listener, that
-   listener's hostname (or `"*"` if it has none);
-4. otherwise - no hostnames anywhere, or an ambiguous multi-listener
-   `Gateway` with no `sectionName` to disambiguate - the catch-all `"*"`.
+The controller turns the policies into two things (see `processorconfig.Build`):
 
-Step 4 is the same documented simplification as the multi-parentRef case
-above: rather than guessing, an ambiguous route is registered as "protect
-this on any host" instead of being left out entirely.
-
-### Paths (`rulePaths`)
-
-For each `match` in the rule's `spec.matches`:
-
-- an `Exact` or `PathPrefix` match contributes its `value` (defaulting to
-  `/` if the match has no `path` at all - the Gateway API default);
-- a rule with **no** `matches` at all contributes `/` alone (again, the
-  Gateway API default: no matches means "match every request");
-- a `RegularExpression` path match is **skipped** - the processor's table is
-  prefix-based and cannot represent a regular expression. This is a
-  documented limitation, not an approximation: a regex-matched rule simply
-  gets no routing-table entry of its own (it may still be covered by a
-  broader entry from another match on the same rule, or from a different
-  rule).
+- **One binding per Accepted policy** in the processor's config (see
+  [`docs/processor.md`](processor.md#configuration) for its shape): the
+  attachment point of the policy's `targetRef` and the engine compiled from
+  the policy. A policy whose directives fail to compile gets a binding
+  without an engine, so the requests that resolve to it are not inspected -
+  they never fall back to a less specific policy. The config depends only on
+  `WAFPolicy` and `WAFRuleSet` objects, not on `HTTPRoute` objects.
+- **One generated `AgentgatewayPolicy` per route that a compiled policy can
+  apply to** (see
+  [`docs/wafpolicy-lifecycle.md` §4](wafpolicy-lifecycle.md#4-gateway-wiring-implemented)),
+  which sends the route's traffic, and its identity, to the processor.
+  `candidatePolicies` in `internal/controller/processorconfig/attachment.go`
+  decides which policies can apply to a route: its rule policies, its
+  route-wide policy, and - when some rule can fall through to the Gateway
+  levels - the listener and default policies of every Gateway in
+  `spec.parentRefs`. The same set also sizes the generated object's body
+  phases, and gives the route count of each policy's `Programmed`
+  condition.
 
 ## Limitations
 
@@ -132,11 +150,12 @@ For each `match` in the rule's `spec.matches`:
   fully replaces a Gateway-level default for the rules it covers; there is
   no way to, say, keep the Gateway default's `paranoiaLevel` while only
   overriding `engine.mode` at the route level.
-- **Multi-parentRef and multi-listener ambiguity** resolve to "first
-  matching parentRef" / `"*"` respectively, rather than full per-listener
-  fidelity (see above).
-- **`RegularExpression` path matches never get a table entry.**
+- **`HTTPRoute` only.** A `WAFPolicy` can target a `Gateway` or an
+  `HTTPRoute`, and the controller only wires `HTTPRoute` objects. A request
+  of another route kind that reaches the processor (through a user-written
+  `AgentgatewayPolicy`) can only resolve to the Gateway levels.
 - **No admission-time preview.** These rules only run inside the
-  reconciler; there is currently no way to ask "which policy would govern
-  this route?" without applying the objects and observing the published
-  config (or the `Programmed` condition's route count).
+  reconciler and the processor; there is currently no way to ask "which
+  policy would govern this request?" without applying the objects and
+  sending the request (the processor logs the identity of every blocked
+  request, and of every request no policy covers at the `debug` level).

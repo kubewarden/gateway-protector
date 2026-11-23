@@ -139,7 +139,7 @@ func (s *Subscriber) streamOnce(ctx context.Context, client configstreamv1.Confi
 
 	if err := stream.Send(&configstreamv1.StreamConfigRequest{
 		Message: &configstreamv1.StreamConfigRequest_Subscribe{
-			Subscribe: &configstreamv1.Subscribe{SubscriberId: s.subscriberID},
+			Subscribe: &configstreamv1.Subscribe{SubscriberId: s.subscriberID, SchemaVersion: SchemaVersion},
 		},
 	}); err != nil {
 		return fmt.Errorf("failed to send subscribe message: %w", err)

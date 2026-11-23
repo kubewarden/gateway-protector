@@ -107,10 +107,9 @@ func TestExtProcMTLSEndToEnd(t *testing.T) {
 	writeExtProcCertFiles(t, clientCertDir, clientCert, clientKey, caCert)
 
 	cfg := &config.Config{
-		Directives: map[string]string{"a": "SecRuleEngine On"},
-		Routes: []config.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "a"}},
-		},
+		SchemaVersion: config.SchemaVersion,
+		Directives:    map[string]string{"a": "SecRuleEngine On"},
+		Bindings:      []config.Binding{testBinding("a")},
 	}
 	dialer := startMTLSExtProcServer(t, cfg, serverCertDir)
 
@@ -126,7 +125,7 @@ func TestExtProcMTLSEndToEnd(t *testing.T) {
 	stream, err := client.Process(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(requestHeadersMessage("example.com", "/")))
+	require.NoError(t, stream.Send(requestHeadersMessage("/")))
 	resp, err := stream.Recv()
 	require.NoError(t, err)
 
@@ -148,8 +147,9 @@ func TestExtProcMTLSRejectsClientWithoutCertificate(t *testing.T) {
 	writeExtProcCertFiles(t, serverCertDir, serverCert, serverKey, caCert)
 
 	cfg := &config.Config{
-		Directives: map[string]string{"a": "SecRuleEngine On"},
-		Routes:     []config.Route{{Host: "example.com", PathPrefix: "/", WAF: &config.WAFRef{EngineKey: "a"}}},
+		SchemaVersion: config.SchemaVersion,
+		Directives:    map[string]string{"a": "SecRuleEngine On"},
+		Bindings:      []config.Binding{testBinding("a")},
 	}
 	dialer := startMTLSExtProcServer(t, cfg, serverCertDir)
 
@@ -172,7 +172,7 @@ func TestExtProcMTLSRejectsClientWithoutCertificate(t *testing.T) {
 	client := envoy_service_ext_proc_v3.NewExternalProcessorClient(conn)
 	stream, err := client.Process(ctx)
 	if err == nil {
-		err = stream.Send(requestHeadersMessage("example.com", "/"))
+		err = stream.Send(requestHeadersMessage("/"))
 	}
 	if err == nil {
 		_, err = stream.Recv()

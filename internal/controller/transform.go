@@ -74,11 +74,10 @@ func CacheOptions(namespace string) cache.Options {
 // TransformStripGateway drops fields of a cached Gateway that this
 // controller never reads, to reduce the cache's memory footprint: all of
 // annotations, status, and managedFields, plus every spec field except the
-// handful of listener attributes actually used - a listener's name (to
-// resolve a WAFPolicy's optional sectionName against it) and its hostname,
-// port and protocol (to know which host/port a route attached to it
-// serves). Everything else (gatewayClassName, addresses, infrastructure,
-// per-listener TLS and allowedRoutes, defaultScope, ...) is dropped.
+// one listener attribute actually used - a listener's name (to resolve a
+// WAFPolicy's optional sectionName against it). Everything else
+// (gatewayClassName, addresses, infrastructure, per-listener hostname,
+// port, protocol, TLS and allowedRoutes, defaultScope, ...) is dropped.
 func TransformStripGateway(object any) (any, error) {
 	gw, ok := object.(*gatewayv1.Gateway)
 	if !ok {
@@ -90,12 +89,7 @@ func TransformStripGateway(object any) (any, error) {
 
 	strippedListeners := make([]gatewayv1.Listener, len(gw.Spec.Listeners))
 	for i, listener := range gw.Spec.Listeners {
-		strippedListeners[i] = gatewayv1.Listener{
-			Name:     listener.Name,
-			Hostname: listener.Hostname,
-			Port:     listener.Port,
-			Protocol: listener.Protocol,
-		}
+		strippedListeners[i] = gatewayv1.Listener{Name: listener.Name}
 	}
 
 	gw.Spec = gatewayv1.GatewaySpec{Listeners: strippedListeners}
@@ -106,11 +100,12 @@ func TransformStripGateway(object any) (any, error) {
 // TransformStripHTTPRoute drops fields of a cached HTTPRoute that this
 // controller never reads, to reduce the cache's memory footprint: all of
 // annotations, status, and managedFields, plus every spec field except the
-// ones actually used - parentRefs and hostnames (to know which Gateway(s)
-// and host(s) the route serves), and, per rule, its name (to resolve a
-// WAFPolicy's optional sectionName against it) and its matches (to know
-// which path(s) the rule applies to). Everything else (filters,
-// backendRefs, timeouts, retry, sessionPersistence, ...) is dropped.
+// ones actually used - parentRefs (to know which Gateway(s) and listener(s)
+// the route serves), and, per rule, its name (to resolve a WAFPolicy's
+// optional sectionName against it). Everything else (hostnames, matches,
+// filters, backendRefs, timeouts, retry, sessionPersistence, ...) is
+// dropped: agentgateway selects the route and rule of each request, so
+// this controller never needs to know which hosts or paths a rule serves.
 func TransformStripHTTPRoute(object any) (any, error) {
 	route, ok := object.(*gatewayv1.HTTPRoute)
 	if !ok {
@@ -122,15 +117,11 @@ func TransformStripHTTPRoute(object any) (any, error) {
 
 	strippedRules := make([]gatewayv1.HTTPRouteRule, len(route.Spec.Rules))
 	for i, rule := range route.Spec.Rules {
-		strippedRules[i] = gatewayv1.HTTPRouteRule{
-			Name:    rule.Name,
-			Matches: rule.Matches,
-		}
+		strippedRules[i] = gatewayv1.HTTPRouteRule{Name: rule.Name}
 	}
 
 	route.Spec = gatewayv1.HTTPRouteSpec{
 		CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: route.Spec.ParentRefs},
-		Hostnames:       route.Spec.Hostnames,
 		Rules:           strippedRules,
 	}
 

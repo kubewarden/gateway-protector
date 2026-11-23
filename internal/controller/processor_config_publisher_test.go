@@ -15,10 +15,9 @@ func TestGRPCPublisherPublishesToConfigServer(t *testing.T) {
 	publisher := &GRPCPublisher{Server: server}
 
 	cfg := &procconfig.Config{
-		Directives: map[string]string{"a": "SecRuleEngine On"},
-		Routes: []procconfig.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &procconfig.WAFRef{EngineKey: "a"}},
-		},
+		SchemaVersion: procconfig.SchemaVersion,
+		Directives:    map[string]string{"a": "SecRuleEngine On"},
+		Bindings:      []procconfig.Binding{testGatewayBinding("gw")},
 	}
 
 	require.NoError(t, publisher.Publish(context.Background(), cfg))
@@ -33,7 +32,7 @@ func TestGRPCPublisherIsDeterministic(t *testing.T) {
 	server := NewConfigServer()
 	publisher := &GRPCPublisher{Server: server}
 
-	cfg := &procconfig.Config{Directives: map[string]string{"a": "SecRuleEngine On"}}
+	cfg := &procconfig.Config{SchemaVersion: procconfig.SchemaVersion, Directives: map[string]string{"a": "SecRuleEngine On"}}
 
 	require.NoError(t, publisher.Publish(context.Background(), cfg))
 	first := server.latestForTest().GetVersion()

@@ -15,112 +15,87 @@ func TestValidate(t *testing.T) {
 		{
 			name: "valid config",
 			cfg: Config{
-				Directives: map[string]string{"a": "SecRuleEngine On"},
-				Routes: []Route{
-					{Host: "example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "a"}},
+				SchemaVersion: SchemaVersion,
+				Directives:    map[string]string{"a": "SecRuleEngine On"},
+				Bindings: []Binding{
+					gatewayBinding("gw", "a"),
+					{Kind: KindGateway, Namespace: "infra", Name: "gw", SectionName: "http", WAF: &WAFRef{EngineKey: "a"}},
+					{Kind: KindHTTPRoute, Namespace: "app", Name: "web", WAF: &WAFRef{EngineKey: "a"}},
+					{Kind: KindHTTPRoute, Namespace: "app", Name: "web", SectionName: "health", WAF: &WAFRef{EngineKey: "a"}},
 				},
 			},
 		},
 		{
-			name: "completely empty config is valid",
-			cfg:  Config{},
+			name: "config with no directives and no bindings is valid",
+			cfg:  Config{SchemaVersion: SchemaVersion},
 		},
 		{
-			name: "no directives, route without waf ref is allowed",
-			cfg:  Config{Routes: []Route{{Host: "example.com", PathPrefix: "/"}}},
+			name:    "config without a schema version is rejected",
+			cfg:     Config{},
+			wantErr: true,
 		},
 		{
-			name: "no directives, route with waf ref is rejected",
+			name:    "config of another schema version is rejected",
+			cfg:     Config{SchemaVersion: SchemaVersion + 1},
+			wantErr: true,
+		},
+		{
+			name: "binding without waf ref is allowed",
 			cfg: Config{
-				Routes: []Route{
-					{Host: "example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "a"}},
-				},
+				SchemaVersion: SchemaVersion,
+				Bindings:      []Binding{{Kind: KindHTTPRoute, Namespace: "app", Name: "web"}},
+			},
+		},
+		{
+			name: "binding references unknown engine key",
+			cfg: Config{
+				SchemaVersion: SchemaVersion,
+				Directives:    map[string]string{"a": "SecRuleEngine On"},
+				Bindings:      []Binding{gatewayBinding("gw", "unknown")},
 			},
 			wantErr: true,
 		},
 		{
 			name: "empty directive body",
 			cfg: Config{
-				Directives: map[string]string{"a": "   "},
+				SchemaVersion: SchemaVersion,
+				Directives:    map[string]string{"a": "   "},
 			},
 			wantErr: true,
 		},
 		{
-			name: "route missing host",
+			name: "binding with an unsupported kind",
 			cfg: Config{
-				Directives: map[string]string{"a": "SecRuleEngine On"},
-				Routes:     []Route{{PathPrefix: "/"}},
+				SchemaVersion: SchemaVersion,
+				Bindings:      []Binding{{Kind: "GRPCRoute", Namespace: "app", Name: "web"}},
 			},
 			wantErr: true,
 		},
 		{
-			name: "route missing pathPrefix",
+			name: "binding missing namespace",
 			cfg: Config{
-				Directives: map[string]string{"a": "SecRuleEngine On"},
-				Routes:     []Route{{Host: "example.com"}},
+				SchemaVersion: SchemaVersion,
+				Bindings:      []Binding{{Kind: KindGateway, Name: "gw"}},
 			},
 			wantErr: true,
 		},
 		{
-			name: "route pathPrefix without leading slash",
+			name: "binding missing name",
 			cfg: Config{
-				Directives: map[string]string{"a": "SecRuleEngine On"},
-				Routes:     []Route{{Host: "example.com", PathPrefix: "api"}},
+				SchemaVersion: SchemaVersion,
+				Bindings:      []Binding{{Kind: KindGateway, Namespace: "infra"}},
 			},
 			wantErr: true,
 		},
 		{
-			name: "route references unknown engine key",
+			name: "two bindings for the same attachment point",
 			cfg: Config{
-				Directives: map[string]string{"a": "SecRuleEngine On"},
-				Routes: []Route{
-					{Host: "example.com", PathPrefix: "/", WAF: &WAFRef{EngineKey: "unknown"}},
+				SchemaVersion: SchemaVersion,
+				Directives:    map[string]string{"a": "SecRuleEngine On"},
+				Bindings: []Binding{
+					{Kind: KindHTTPRoute, Namespace: "app", Name: "web", SectionName: "health", WAF: &WAFRef{EngineKey: "a"}},
+					{Kind: KindHTTPRoute, Namespace: "app", Name: "web", SectionName: "health"},
 				},
-			},
-			wantErr: true,
-		},
-		{
-			name: "route without waf ref is allowed",
-			cfg: Config{
-				Directives: map[string]string{"a": "SecRuleEngine On"},
-				Routes:     []Route{{Host: "example.com", PathPrefix: "/"}},
-			},
-		},
-		{
-			name: "wildcard host is allowed",
-			cfg: Config{
-				Directives: map[string]string{"a": "SecRuleEngine On"},
-				Routes:     []Route{{Host: "*.example.com", PathPrefix: "/"}},
-			},
-		},
-		{
-			name: "catch-all host is allowed",
-			cfg: Config{
-				Directives: map[string]string{"a": "SecRuleEngine On"},
-				Routes:     []Route{{Host: "*", PathPrefix: "/"}},
-			},
-		},
-		{
-			name: "wildcard host with empty suffix is rejected",
-			cfg: Config{
-				Directives: map[string]string{"a": "SecRuleEngine On"},
-				Routes:     []Route{{Host: "*.", PathPrefix: "/"}},
-			},
-			wantErr: true,
-		},
-		{
-			name: "wildcard host with a second wildcard label is rejected",
-			cfg: Config{
-				Directives: map[string]string{"a": "SecRuleEngine On"},
-				Routes:     []Route{{Host: "*.foo.*.com", PathPrefix: "/"}},
-			},
-			wantErr: true,
-		},
-		{
-			name: "wildcard not anchored at the start is rejected",
-			cfg: Config{
-				Directives: map[string]string{"a": "SecRuleEngine On"},
-				Routes:     []Route{{Host: "foo*.example.com", PathPrefix: "/"}},
 			},
 			wantErr: true,
 		},

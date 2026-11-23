@@ -155,11 +155,11 @@ func TestBuildWiringUnionsBodyNeedsAcrossRules(t *testing.T) {
 }
 
 // TestBuildWiringUnionMixedModes pins that the body-needs union is taken
-// across every covered rule's *effective* policy regardless of mode: an
-// Off rule contributes no body needs of its own, but doesn't shrink the
-// union either - a sibling Blocking rule's needs still apply to the whole
-// route's wiring, since wiring is per-route while engine selection stays
-// per-rule (see RouteWiring's doc comment). The accepted cost: the Off
+// across every candidate policy regardless of mode: an Off rule
+// contributes no body needs of its own, but doesn't shrink the union
+// either - a sibling Blocking rule's needs still apply to the whole
+// route's wiring, since wiring is per-route while engine selection is
+// per-request (see RouteWiring's doc comment). The accepted cost: the Off
 // rule's own traffic still streams bodies through ext_proc even though its
 // engine never inspects them, since one route gets exactly one wiring.
 func TestBuildWiringUnionMixedModes(t *testing.T) {
@@ -185,4 +185,51 @@ func TestBuildWiringUnionMixedModes(t *testing.T) {
 	require.Len(t, wiring, 1, "one wiring per route, not per rule")
 	assert.True(t, wiring[0].NeedRequestBody, "the sibling Blocking rule's needs must not be lost to the Off rule's lack of any")
 	assert.True(t, wiring[0].NeedResponseBody)
+}
+
+// TestBuildWiringListenerPolicyCoversRouteOnAnyListener pins the listener
+// scope: a listener policy applies to every request that its listener
+// accepts, so it wires a route whose parentRef names no listener - the
+// route can receive traffic through that listener.
+func TestBuildWiringListenerPolicyCoversRouteOnAnyListener(t *testing.T) {
+	policy := newPolicy("gw-https", gatewayTargetRef("infra", "shared-gw", new(gatewayv1.SectionName("https"))))
+	policy.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeBlocking
+
+	route := wiringTestRoute("shared-gw")
+
+	result := Build(Input{
+		Policies:   []*gwpv1alpha1.WAFPolicy{policy},
+		HTTPRoutes: []*gatewayv1.HTTPRoute{route},
+	}, alwaysCompiles)
+
+	require.Len(t, result.Wiring, 1)
+	assert.Same(t, route, result.Wiring[0].Route)
+	assert.Equal(t, 1, result.PolicyResults[0].RouteCount)
+}
+
+// TestBuildWiringRouteOnTwoGateways pins that a route attached to two
+// Gateways is wired for, and counted by, the policies of both: the
+// processor selects by the Gateway that accepted each request.
+func TestBuildWiringRouteOnTwoGateways(t *testing.T) {
+	public := newPolicy("public", gatewayTargetRef("infra", "public-gw", nil))
+	public.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeOff
+
+	internal := newPolicy("internal", gatewayTargetRef("infra", "internal-gw", nil))
+	internal.Spec.Engine.Mode = gwpv1alpha1.WAFEngineModeBlocking
+
+	route := wiringTestRoute("public-gw")
+	route.Spec.ParentRefs = append(route.Spec.ParentRefs, gatewayv1.ParentReference{
+		Name:      "internal-gw",
+		Namespace: new(gatewayv1.Namespace("infra")),
+	})
+
+	result := Build(Input{
+		Policies:   []*gwpv1alpha1.WAFPolicy{public, internal},
+		HTTPRoutes: []*gatewayv1.HTTPRoute{route},
+	}, alwaysCompiles)
+
+	require.Len(t, result.Wiring, 1)
+	assert.True(t, result.Wiring[0].NeedRequestBody, "the second gateway's Blocking policy needs bodies, even though the first gateway's is Off")
+	assert.Equal(t, 1, result.PolicyResults[0].RouteCount)
+	assert.Equal(t, 1, result.PolicyResults[1].RouteCount)
 }

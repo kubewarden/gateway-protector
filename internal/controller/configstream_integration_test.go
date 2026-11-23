@@ -72,34 +72,57 @@ func TestConfigStreamEndToEnd(t *testing.T) {
 	go func() { _ = subscriber.Run(ctx, func(s *procconfig.Snapshot) { received <- s }) }()
 
 	firstCfg := &procconfig.Config{
-		Directives: map[string]string{"a": "SecRuleEngine On"},
-		Routes: []procconfig.Route{
-			{Host: "example.com", PathPrefix: "/", WAF: &procconfig.WAFRef{EngineKey: "a"}},
-		},
+		SchemaVersion: procconfig.SchemaVersion,
+		Directives:    map[string]string{"a": "SecRuleEngine On"},
+		Bindings:      []procconfig.Binding{testGatewayBinding("gw")},
 	}
 	require.NoError(t, publisher.Publish(ctx, firstCfg))
 
 	select {
 	case snapshot := <-received:
-		_, matched := snapshot.Match("example.com", "/")
-		assert.True(t, matched, "expected the first published config to reach the subscriber and match example.com")
+		_, matched := snapshot.Resolve(testGatewayRequest("gw"))
+		assert.True(t, matched, "expected the first published config to reach the subscriber and bind the gw Gateway")
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for the subscriber to receive the first published config")
 	}
 
 	updatedCfg := &procconfig.Config{
-		Directives: map[string]string{"a": "SecRuleEngine On"},
-		Routes: []procconfig.Route{
-			{Host: "updated.example.com", PathPrefix: "/", WAF: &procconfig.WAFRef{EngineKey: "a"}},
-		},
+		SchemaVersion: procconfig.SchemaVersion,
+		Directives:    map[string]string{"a": "SecRuleEngine On"},
+		Bindings:      []procconfig.Binding{testGatewayBinding("updated-gw")},
 	}
 	require.NoError(t, publisher.Publish(ctx, updatedCfg))
 
 	select {
 	case snapshot := <-received:
-		_, matched := snapshot.Match("updated.example.com", "/")
-		assert.True(t, matched, "expected the updated published config to reach the subscriber and match updated.example.com")
+		_, matched := snapshot.Resolve(testGatewayRequest("updated-gw"))
+		assert.True(t, matched, "expected the updated published config to reach the subscriber and bind the updated-gw Gateway")
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for the subscriber to receive the updated published config")
+	}
+}
+
+// testGatewayBinding binds the whole "infra/<name>" Gateway to the engine
+// key "a".
+func testGatewayBinding(name string) procconfig.Binding {
+	return procconfig.Binding{
+		Kind:      procconfig.KindGateway,
+		Namespace: "infra",
+		Name:      name,
+		WAF:       &procconfig.WAFRef{EngineKey: "a"},
+	}
+}
+
+// testGatewayRequest returns the identity of a request that the
+// "infra/<name>" Gateway accepted, for a config built with
+// testGatewayBinding.
+func testGatewayRequest(name string) procconfig.Identity {
+	return procconfig.Identity{
+		GatewayNamespace: "infra",
+		GatewayName:      name,
+		ListenerName:     "http",
+		RouteKind:        procconfig.KindHTTPRoute,
+		RouteNamespace:   "app",
+		RouteName:        "web",
 	}
 }

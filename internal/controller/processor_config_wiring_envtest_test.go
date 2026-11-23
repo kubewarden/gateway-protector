@@ -115,6 +115,10 @@ var _ = Describe("Gateway wiring (generated AgentgatewayPolicy)", func() {
 			Expect(options).NotTo(BeNil())
 			Expect(*options.RequestBodyMode).To(Equal(agentgatewayapi.BodySendModeFullDuplexStreamed))
 			Expect(*options.ResponseBodyMode).To(Equal(agentgatewayapi.BodySendModeNone))
+
+			// The agentgateway CRD accepted the metadataContext together
+			// with backendRef and processingOptions, and kept it intact.
+			Expect(extProc.MetadataContext).To(Equal(wiringMetadataContext()))
 		})
 
 		It("repairs drift on the fields it owns", func() {
