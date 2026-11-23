@@ -7,7 +7,7 @@ ENVTEST_VERSION ?= $(shell go list -m -f '{{.Version}}' sigs.k8s.io/controller-r
 # setup-envtest installs the latest patch release of that Kubernetes version.
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f '{{.Version}}' k8s.io/api | sed -E 's/^v0\.([0-9]+)\..*/1.\1/')
 # renovate: datasource=github-releases depName=losisin/helm-values-schema-json
-HELM_VALUES_SCHEMA_JSON_VERSION := v2.6.0
+HELM_VALUES_SCHEMA_JSON_VERSION := v2.6.1
 # renovate: datasource=github-releases depName=golangci/golangci-lint
 GOLANGCI_LINT_VERSION ?= v2.15.0
 # renovate: datasource=github-releases depName=bufbuild/buf
