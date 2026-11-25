@@ -16,14 +16,19 @@ import (
 	"syscall"
 
 	envoy_service_ext_proc_v3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/grpclog"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/kubewarden/gateway-protector/internal/certs"
+	"github.com/kubewarden/gateway-protector/internal/logging"
 	"github.com/kubewarden/gateway-protector/internal/processor"
 	"github.com/kubewarden/gateway-protector/internal/processor/config"
 )
@@ -93,6 +98,7 @@ func run() int {
 	cfg := parseFlags()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLogLevel(cfg.LogLevel)}))
+	redirectLibraryLogs(logger)
 
 	if cfg.ConfigServerAddress == "" {
 		logger.Error("--config-server-address is required")
@@ -214,6 +220,19 @@ func run() int {
 	}
 
 	return 0
+}
+
+// redirectLibraryLogs makes the libraries that the processor uses write
+// their logs to logger, so that each line of the processor log is JSON.
+// Otherwise they write plain text to stderr: controller-runtime, which the
+// ext_proc certificate watcher uses, prints a warning with a stack trace 30
+// seconds after the start because its logger is not set, and grpc-go and
+// klog have their own text loggers. It must run before these libraries log
+// anything: the klog and grpc-go setters are not safe for concurrent use.
+func redirectLibraryLogs(logger *slog.Logger) {
+	ctrllog.SetLogger(logr.FromSlogHandler(logger.Handler()))
+	klog.SetSlogLogger(logger)
+	grpclog.SetLoggerV2(logging.NewGRPCLogger(logger))
 }
 
 func parseLogLevel(level string) slog.Level {
